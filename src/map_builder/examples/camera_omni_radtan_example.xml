@@ -1,0 +1,2 @@
+<?xml version='1.0' encoding='utf-8'?>
+<camera><model>omni_radtan</model><image_width>1920</image_width><image_height>1080</image_height><intrinsics><fx>600.0</fx><fy>600.0</fy><cx>960.0</cx><cy>540.0</cy></intrinsics><omni><xi>1.0</xi></omni><distortion><k1>0.0</k1><k2>0.0</k2><p1>0.0</p1><p2>0.0</p2><k3>0.0</k3></distortion></camera>
