@@ -1,0 +1,2 @@
+Marker Type: ARUCO_MIP_36h12
+Marker Width: 12.5 cm
