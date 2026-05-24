@@ -250,7 +250,7 @@ class MainWindow(ttk.Frame):
                 )
             else:
                 self.controls.set_pnp_status("Marker geometry settings saved")
-            self.map_3d_viewer.refresh()
+            self.map_3d_viewer.request_refresh()
             return True
         except Exception as exc:
             messagebox.showerror("Invalid Initialization Settings", str(exc))
@@ -325,7 +325,7 @@ class MainWindow(ttk.Frame):
                 self.controls.set_pnp_status(
                     f"Processed: {total}\nSuccessful: {successes}\nFailed: {failures}\nMean reprojection error: {error_text}"
                 )
-                self.map_3d_viewer.refresh()
+                self.map_3d_viewer.request_refresh()
             elif kind == "error":
                 self.controls.set_pnp_running(False)
                 self.controls.set_pnp_status("PnP initialization failed")
@@ -371,7 +371,7 @@ class MainWindow(ttk.Frame):
             if kind == "done":
                 self.controls.set_graph_running(False)
                 self.controls.set_graph_status(format_graph_diagnostics(payload))  # type: ignore[arg-type]
-                self.map_3d_viewer.refresh()
+                self.map_3d_viewer.request_refresh()
             elif kind == "error":
                 self.controls.set_graph_running(False)
                 self.controls.set_graph_status("Graph / seed initialization failed")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import tkinter as tk
 from tkinter import ttk
 from typing import Any
@@ -24,19 +25,22 @@ class Map3DViewerPanel(ttk.Frame):
         self.show_labels_var = tk.BooleanVar(value=True)
         self.selected_only_var = tk.BooleanVar(value=False)
         self._matplotlib_ready = False
+        self._dirty = True
+        self._pending_refresh_id: str | None = None
+        self._last_render_key: str | None = None
 
         controls = ttk.Frame(self)
         controls.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
         controls.columnconfigure(4, weight=1)
-        ttk.Button(controls, text="Refresh 3D View", command=self.refresh).grid(row=0, column=0, padx=(0, 8))
-        ttk.Checkbutton(controls, text="Cameras", variable=self.show_cameras_var, command=self.refresh).grid(row=0, column=1)
-        ttk.Checkbutton(controls, text="Markers", variable=self.show_markers_var, command=self.refresh).grid(row=0, column=2)
-        ttk.Checkbutton(controls, text="Labels", variable=self.show_labels_var, command=self.refresh).grid(row=0, column=3)
+        ttk.Button(controls, text="Refresh 3D View", command=lambda: self.refresh(force=True)).grid(row=0, column=0, padx=(0, 8))
+        ttk.Checkbutton(controls, text="Cameras", variable=self.show_cameras_var, command=lambda: self.refresh(force=True)).grid(row=0, column=1)
+        ttk.Checkbutton(controls, text="Markers", variable=self.show_markers_var, command=lambda: self.refresh(force=True)).grid(row=0, column=2)
+        ttk.Checkbutton(controls, text="Labels", variable=self.show_labels_var, command=lambda: self.refresh(force=True)).grid(row=0, column=3)
         ttk.Checkbutton(
             controls,
             text="Selected image only",
             variable=self.selected_only_var,
-            command=self.refresh,
+            command=lambda: self.refresh(force=True),
         ).grid(row=0, column=4, sticky="w")
 
         self.plot_frame = ttk.Frame(self)
@@ -48,7 +52,7 @@ class Map3DViewerPanel(ttk.Frame):
             from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
             from matplotlib.figure import Figure
 
-            self.figure = Figure(figsize=(6, 5), dpi=100)
+            self.figure = Figure(figsize=(9, 7), dpi=100, constrained_layout=True)
             self.axes = self.figure.add_subplot(111, projection="3d")
             self.canvas = FigureCanvasTkAgg(self.figure, master=self.plot_frame)
             self.canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
@@ -59,7 +63,7 @@ class Map3DViewerPanel(ttk.Frame):
             self._matplotlib_ready = True
             self._FigureCanvasTkAgg = FigureCanvasTkAgg
             self._NavigationToolbar2Tk = NavigationToolbar2Tk
-            self.refresh()
+            self.request_refresh()
         except Exception as exc:
             ttk.Label(self.plot_frame, text=f"Matplotlib 3D view unavailable: {exc}", wraplength=500).grid(
                 row=0, column=0, sticky="nsew", padx=12, pady=12
@@ -68,34 +72,114 @@ class Map3DViewerPanel(ttk.Frame):
     def set_project(self, project_folder: Path | None, store: ProjectStore | None) -> None:
         self.project_folder = project_folder
         self.store = store
-        self.refresh()
+        self._last_render_key = None
+        self.request_refresh()
 
     def set_selected_image_id(self, image_id: int | None) -> None:
+        if self.selected_image_id == image_id:
+            return
         self.selected_image_id = image_id
         if self.selected_only_var.get():
+            self.request_refresh()
+
+    def on_tab_visible(self) -> None:
+        if self._dirty:
             self.refresh()
 
-    def refresh(self) -> None:
+    def request_refresh(self) -> None:
+        self._dirty = True
+        if not self._matplotlib_ready or not self.winfo_ismapped():
+            return
+        if self._pending_refresh_id is not None:
+            return
+        self._pending_refresh_id = self.after_idle(self._run_pending_refresh)
+
+    def _run_pending_refresh(self) -> None:
+        self._pending_refresh_id = None
+        self.refresh()
+
+    def refresh(self, force: bool = False) -> None:
         if not self._matplotlib_ready:
             return
+        if not self.winfo_ismapped():
+            self._dirty = True
+            return
+
+        render_data = self._load_render_data()
+        render_key = self._render_key(render_data)
+        if not force and not self._dirty and render_key == self._last_render_key:
+            return
+        self._dirty = False
+        self._last_render_key = render_key
+
         self.axes.clear()
         self.axes.set_xlabel("X")
         self.axes.set_ylabel("Y")
         self.axes.set_zlabel("Z")
-        if self.store is None:
+        if render_data["store_missing"]:
             self.axes.text(0, 0, 0, "No project loaded")
             self.canvas.draw_idle()
             return
 
-        marker_size = self.store.get_marker_size_m() or 0.1
-        seed_cameras = self.store.get_seed_camera_poses()
-        seed_markers = self.store.get_seed_marker_poses()
+        marker_size = render_data["marker_size"]
+        seed_cameras = render_data["seed_cameras"]
+        seed_markers = render_data["seed_markers"]
         if seed_cameras or seed_markers:
             self._draw_seed_map(marker_size, seed_cameras, seed_markers)
         else:
-            self._draw_selected_frame_local(marker_size)
+            self._draw_selected_frame_local(marker_size, render_data["selected_pnp_observations"])
         self._set_equal_axes()
         self.canvas.draw_idle()
+
+    def _load_render_data(self) -> dict[str, Any]:
+        if self.store is None:
+            return {
+                "store_missing": True,
+                "marker_size": 0.1,
+                "seed_cameras": [],
+                "seed_markers": [],
+                "selected_pnp_observations": [],
+            }
+        seed_cameras = self.store.get_seed_camera_poses()
+        seed_markers = self.store.get_seed_marker_poses()
+        observations = []
+        if not seed_cameras and not seed_markers and self.selected_image_id is not None:
+            observations = [
+                obs
+                for obs in self.store.list_pnp_observations(success_only=True)
+                if obs.image_id == self.selected_image_id and obs.T_C_M is not None
+            ]
+        return {
+            "store_missing": False,
+            "marker_size": self.store.get_marker_size_m() or 0.1,
+            "seed_cameras": seed_cameras,
+            "seed_markers": seed_markers,
+            "selected_pnp_observations": observations,
+        }
+
+    def _render_key(self, render_data: dict[str, Any]) -> str:
+        key_data = {
+            "store_missing": render_data["store_missing"],
+            "marker_size": render_data["marker_size"],
+            "selected_image_id": self.selected_image_id,
+            "show_cameras": self.show_cameras_var.get(),
+            "show_markers": self.show_markers_var.get(),
+            "show_labels": self.show_labels_var.get(),
+            "selected_only": self.selected_only_var.get(),
+            "seed_cameras": [
+                [pose.image_id, pose.T_W_C, pose.source_marker_id, pose.reprojection_error_px]
+                for pose in render_data["seed_cameras"]
+            ],
+            "seed_markers": [
+                [pose.marker_id, pose.T_W_M, pose.source_image_id, pose.reprojection_error_px, pose.is_anchor]
+                for pose in render_data["seed_markers"]
+            ],
+            "selected_pnp": [
+                [obs.id, obs.image_id, obs.marker_id, obs.T_C_M, obs.reprojection_error_px]
+                for obs in render_data["selected_pnp_observations"]
+            ],
+        }
+        return json.dumps(key_data, sort_keys=True)
 
     def _draw_seed_map(self, marker_size: float, seed_cameras: list[Any], seed_markers: list[Any]) -> None:
         if self.show_cameras_var.get():
@@ -111,15 +195,10 @@ class Map3DViewerPanel(ttk.Frame):
                 corners_w = T_W_M.transform_points(local_corners)
                 self._draw_marker_square(corners_w, pose.marker_id)
 
-    def _draw_selected_frame_local(self, marker_size: float) -> None:
+    def _draw_selected_frame_local(self, marker_size: float, observations: list[Any]) -> None:
         self.axes.text(0, 0, 0, "No seed poses yet: showing selected image PnP frame")
         if self.selected_image_id is None:
             return
-        observations = [
-            obs
-            for obs in self.store.list_pnp_observations(success_only=True)  # type: ignore[union-attr]
-            if obs.image_id == self.selected_image_id and obs.T_C_M is not None
-        ]
         self._draw_camera(SE3.identity(), "C")
         local_corners = marker_corners_y_up(marker_size)
         for obs in observations:
