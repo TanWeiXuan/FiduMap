@@ -50,3 +50,56 @@ class IndexSummary:
     num_updated: int = 0
     num_missing: int = 0
     num_unchanged: int = 0
+
+
+@dataclass(frozen=True)
+class PnPObservation:
+    image_id: int
+    detection_id: int
+    marker_id: int
+    success: bool
+    rvec: list[float] | None = None
+    tvec: list[float] | None = None
+    T_C_M: dict[str, Any] | None = None
+    reprojection_error_px: float | None = None
+    error_message: str | None = None
+    id: int | None = None
+    created_at: str | None = None
+
+
+@dataclass(frozen=True)
+class SeedCameraPose:
+    image_id: int
+    T_W_C: dict[str, Any]
+    source_marker_id: int | None = None
+    reprojection_error_px: float | None = None
+    created_at: str | None = None
+
+
+@dataclass(frozen=True)
+class SeedMarkerPose:
+    marker_id: int
+    T_W_M: dict[str, Any]
+    source_image_id: int | None = None
+    reprojection_error_px: float | None = None
+    is_anchor: bool = False
+    created_at: str | None = None
+
+
+@dataclass(frozen=True)
+class GraphDiagnostics:
+    values: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ObservationGraphSummary:
+    num_camera_nodes: int
+    num_marker_nodes: int
+    num_camera_marker_edges: int
+    num_marker_overlap_edges: int
+    connected_components: int
+    anchor_marker_exists: bool
+    markers_connected_to_anchor: int
+    disconnected_markers: list[int]
+    observations_per_marker: dict[int, int] = field(default_factory=dict)
+    observations_per_image: dict[int, int] = field(default_factory=dict)

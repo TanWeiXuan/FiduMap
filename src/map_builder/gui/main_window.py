@@ -10,12 +10,14 @@ from tkinter import filedialog, messagebox, ttk
 
 from map_builder.camera_models import load_camera_model_xml
 from map_builder.detection import DetectionRunner
+from map_builder.initialization import PnPInitializer, build_graph_from_store, initialize_seed_poses_from_store
+from map_builder.initialization.diagnostics import format_graph_diagnostics
 from map_builder.project import DetectorRunConfig, ImageIndexer, ProjectStore
 
 from .control_panel import ControlPanel
 from .image_list_panel import ImageListPanel
-from .image_viewer_panel import ImageViewerPanel
 from .menu_bar import create_menu_bar
+from .right_panel_tabs import RightPanelTabs
 
 
 class MainWindow(ttk.Frame):
@@ -25,8 +27,13 @@ class MainWindow(ttk.Frame):
         self.store: ProjectStore | None = None
         self.project_folder: Path | None = None
         self.camera_config_path: Path | None = None
+        self.camera_model: object | None = None
         self._detection_queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self._detection_thread: threading.Thread | None = None
+        self._pnp_queue: queue.Queue[tuple[str, object]] = queue.Queue()
+        self._pnp_thread: threading.Thread | None = None
+        self._graph_queue: queue.Queue[tuple[str, object]] = queue.Queue()
+        self._graph_thread: threading.Thread | None = None
 
         self.root.title("Fiducial Map Builder")
         self.root.geometry("1180x760")
@@ -53,12 +60,17 @@ class MainWindow(ttk.Frame):
             ignore_selected=self.ignore_selected,
             unignore_selected=self.unignore_selected,
             run_detection=self.run_detection,
+            save_initialization_settings=self.save_initialization_settings,
+            run_pnp_initialization=self.run_pnp_initialization,
+            build_graph_and_seed=self.build_graph_and_seed,
         )
         self.left_pane.add(self.image_list, weight=3)
         self.left_pane.add(self.controls, weight=1)
 
-        self.viewer = ImageViewerPanel(self)
-        self.viewer.grid(row=0, column=1, sticky="nsew")
+        self.right_tabs = RightPanelTabs(self)
+        self.right_tabs.grid(row=0, column=1, sticky="nsew")
+        self.viewer = self.right_tabs.image_viewer
+        self.map_3d_viewer = self.right_tabs.map_3d_viewer
 
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 
@@ -87,6 +99,9 @@ class MainWindow(ttk.Frame):
             self.project_folder = folder.expanduser().resolve()
             self.store = ProjectStore.open(self.project_folder)
             self.camera_config_path = self.store.get_camera_config_path()
+            self.controls.set_initialization_settings(self.store.get_marker_size_m(), self.store.get_anchor_marker_id())
+            self.controls.set_graph_status(format_graph_diagnostics(self.store.get_graph_diagnostics()))
+            self.map_3d_viewer.set_project(self.project_folder, self.store)
             self.refresh_index()
             self._load_default_or_existing_camera_config()
             self._update_path_display()
@@ -113,7 +128,7 @@ class MainWindow(ttk.Frame):
             messagebox.showinfo("No Project", "Choose an image folder before loading a camera config.")
             return
         try:
-            load_camera_model_xml(path)
+            self.camera_model = load_camera_model_xml(path)
             self.camera_config_path = path.expanduser().resolve()
             self.store.set_camera_config_path(self.camera_config_path)
             self._update_path_display()
@@ -155,6 +170,7 @@ class MainWindow(ttk.Frame):
             return
         detections = self.store.get_detections_for_image(record.id)
         self.viewer.show_image(record.absolute_path(self.project_folder), detections)
+        self.map_3d_viewer.set_selected_image_id(record.id)
 
     def run_detection(self) -> None:
         if self.store is None or self.project_folder is None:
@@ -215,12 +231,152 @@ class MainWindow(ttk.Frame):
         if keep_polling:
             self.root.after(100, self._poll_detection_queue)
 
+    def save_initialization_settings(self) -> bool:
+        if self.store is None:
+            self.controls.set_pnp_status("Choose an image folder first")
+            return False
+        try:
+            marker_size = self.controls.marker_size_m()
+            anchor = self.controls.anchor_marker_id()
+            self.store.set_marker_size_m(marker_size)
+            self.store.set_anchor_marker_id(anchor)
+            self.controls.set_initialization_settings(marker_size, anchor)
+            self.controls.set_pnp_status("Marker geometry settings saved")
+            self.map_3d_viewer.refresh()
+            return True
+        except Exception as exc:
+            messagebox.showerror("Invalid Initialization Settings", str(exc))
+            return False
+
+    def run_pnp_initialization(self) -> None:
+        if self.store is None or self.project_folder is None:
+            self.controls.set_pnp_status("Choose an image folder first")
+            return
+        if self.camera_config_path is None:
+            self.controls.set_pnp_status("Choose a camera config XML first")
+            return
+        if self._pnp_thread is not None and self._pnp_thread.is_alive():
+            return
+        if not self.save_initialization_settings():
+            return
+
+        marker_size = self.controls.marker_size_m()
+        camera_path = self.camera_config_path
+        self.controls.set_pnp_running(True)
+        self.controls.set_pnp_status("Starting PnP initialization")
+        self._pnp_thread = threading.Thread(
+            target=self._run_pnp_worker,
+            args=(camera_path, marker_size),
+            daemon=True,
+        )
+        self._pnp_thread.start()
+        self.root.after(100, self._poll_pnp_queue)
+
+    def _run_pnp_worker(self, camera_path: Path, marker_size: float) -> None:
+        assert self.project_folder is not None
+        worker_store: ProjectStore | None = None
+        try:
+            camera_model = load_camera_model_xml(camera_path)
+            worker_store = ProjectStore.open(self.project_folder)
+
+            def progress(index: int, total: int, message: str) -> None:
+                self._pnp_queue.put(("progress", (index, total, message)))
+
+            observations = PnPInitializer(
+                self.project_folder,
+                worker_store,
+                camera_model,
+                marker_size,
+                progress_callback=progress,
+            ).run()
+            successes = [obs for obs in observations if obs.success]
+            failures = [obs for obs in observations if not obs.success]
+            errors = [obs.reprojection_error_px for obs in successes if obs.reprojection_error_px is not None]
+            mean_error = sum(errors) / len(errors) if errors else None
+            self._pnp_queue.put(("done", (len(observations), len(successes), len(failures), mean_error)))
+        except Exception as exc:
+            self._pnp_queue.put(("error", str(exc)))
+        finally:
+            if worker_store is not None:
+                worker_store.close()
+
+    def _poll_pnp_queue(self) -> None:
+        keep_polling = self._pnp_thread is not None and self._pnp_thread.is_alive()
+        while True:
+            try:
+                kind, payload = self._pnp_queue.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "progress":
+                index, total, message = payload  # type: ignore[misc]
+                self.controls.set_pnp_status(f"PnP: detection {index} / {total} ({message})")
+            elif kind == "done":
+                total, successes, failures, mean_error = payload  # type: ignore[misc]
+                self.controls.set_pnp_running(False)
+                error_text = "n/a" if mean_error is None else f"{mean_error:.3f} px"
+                self.controls.set_pnp_status(
+                    f"Processed: {total}\nSuccessful: {successes}\nFailed: {failures}\nMean reprojection error: {error_text}"
+                )
+                self.map_3d_viewer.refresh()
+            elif kind == "error":
+                self.controls.set_pnp_running(False)
+                self.controls.set_pnp_status("PnP initialization failed")
+                messagebox.showerror("PnP Initialization Failed", str(payload))
+        if keep_polling:
+            self.root.after(100, self._poll_pnp_queue)
+
+    def build_graph_and_seed(self) -> None:
+        if self.store is None or self.project_folder is None:
+            self.controls.set_graph_status("Choose an image folder first")
+            return
+        if self._graph_thread is not None and self._graph_thread.is_alive():
+            return
+        if not self.save_initialization_settings():
+            return
+        self.controls.set_graph_running(True)
+        self.controls.set_graph_status("Building graph and seed poses")
+        self._graph_thread = threading.Thread(target=self._run_graph_worker, daemon=True)
+        self._graph_thread.start()
+        self.root.after(100, self._poll_graph_queue)
+
+    def _run_graph_worker(self) -> None:
+        assert self.project_folder is not None
+        worker_store: ProjectStore | None = None
+        try:
+            worker_store = ProjectStore.open(self.project_folder)
+            build_graph_from_store(worker_store)
+            initialize_seed_poses_from_store(worker_store)
+            self._graph_queue.put(("done", worker_store.get_graph_diagnostics()))
+        except Exception as exc:
+            self._graph_queue.put(("error", str(exc)))
+        finally:
+            if worker_store is not None:
+                worker_store.close()
+
+    def _poll_graph_queue(self) -> None:
+        keep_polling = self._graph_thread is not None and self._graph_thread.is_alive()
+        while True:
+            try:
+                kind, payload = self._graph_queue.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "done":
+                self.controls.set_graph_running(False)
+                self.controls.set_graph_status(format_graph_diagnostics(payload))  # type: ignore[arg-type]
+                self.map_3d_viewer.refresh()
+            elif kind == "error":
+                self.controls.set_graph_running(False)
+                self.controls.set_graph_status("Graph / seed initialization failed")
+                messagebox.showerror("Graph Initialization Failed", str(payload))
+        if keep_polling:
+            self.root.after(100, self._poll_graph_queue)
+
     def _load_default_or_existing_camera_config(self) -> None:
         if self.store is None or self.project_folder is None:
             return
         if self.camera_config_path is not None and self.camera_config_path.exists():
             try:
-                load_camera_model_xml(self.camera_config_path)
+                self.camera_model = load_camera_model_xml(self.camera_config_path)
                 return
             except Exception:
                 self.camera_config_path = None

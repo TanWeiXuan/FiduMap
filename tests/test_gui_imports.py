@@ -4,7 +4,9 @@ def test_gui_modules_import_without_creating_tk_root() -> None:
     import map_builder.gui.image_list_panel
     import map_builder.gui.image_viewer_panel
     import map_builder.gui.main_window
+    import map_builder.gui.map_3d_viewer_panel
     import map_builder.gui.menu_bar
+    import map_builder.gui.right_panel_tabs
     import map_builder.gui.scrollable_frame
     import map_builder.gui.theme
 

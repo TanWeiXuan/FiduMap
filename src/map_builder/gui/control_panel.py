@@ -18,6 +18,9 @@ class ControlPanel(ScrollableFrame):
         ignore_selected: object,
         unignore_selected: object,
         run_detection: object,
+        save_initialization_settings: object,
+        run_pnp_initialization: object,
+        build_graph_and_seed: object,
         **kwargs: object,
     ):
         super().__init__(master, **kwargs)
@@ -26,6 +29,10 @@ class ControlPanel(ScrollableFrame):
         self.status_var = tk.StringVar(value="Ready")
         self.detector_type_var = tk.StringVar(value="ArUco")
         self.dictionary_var = tk.StringVar(value=ARUCO_DICTIONARY_CHOICES[0])
+        self.marker_size_var = tk.StringVar(value="")
+        self.anchor_marker_var = tk.StringVar(value="0")
+        self.pnp_status_var = tk.StringVar(value="PnP not run")
+        self.graph_status_var = tk.StringVar(value="Graph not built")
 
         frame = self.inner
         frame.columnconfigure(0, weight=1)
@@ -76,6 +83,34 @@ class ControlPanel(ScrollableFrame):
         self.run_button.grid(row=12, column=0, sticky="ew", padx=8, pady=(10, 3))
         self.status_label = ttk.Label(frame, textvariable=self.status_var, justify="left")
         self.status_label.grid(row=13, column=0, sticky="ew", padx=8, pady=8)
+
+        ttk.Separator(frame).grid(row=14, column=0, sticky="ew", padx=8, pady=10)
+        ttk.Label(frame, text="Marker Geometry / PnP").grid(row=15, column=0, sticky="w", padx=8)
+        marker_grid = ttk.Frame(frame)
+        marker_grid.grid(row=16, column=0, sticky="ew", padx=8, pady=3)
+        marker_grid.columnconfigure(1, weight=1)
+        ttk.Label(marker_grid, text="Marker side length (m)").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Entry(marker_grid, textvariable=self.marker_size_var, width=12).grid(row=0, column=1, sticky="ew", pady=2)
+        ttk.Label(marker_grid, text="Anchor marker ID").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Entry(marker_grid, textvariable=self.anchor_marker_var, width=12).grid(row=1, column=1, sticky="ew", pady=2)
+        pnp_actions = ttk.Frame(frame)
+        pnp_actions.grid(row=17, column=0, sticky="ew", padx=8, pady=3)
+        pnp_actions.columnconfigure(0, weight=1)
+        pnp_actions.columnconfigure(1, weight=1)
+        ttk.Button(pnp_actions, text="Save Settings", command=save_initialization_settings).grid(
+            row=0, column=0, sticky="ew", padx=(0, 3)
+        )
+        self.pnp_button = ttk.Button(pnp_actions, text="Run PnP Initialization", command=run_pnp_initialization)
+        self.pnp_button.grid(row=0, column=1, sticky="ew", padx=(3, 0))
+        self.pnp_status_label = ttk.Label(frame, textvariable=self.pnp_status_var, justify="left")
+        self.pnp_status_label.grid(row=18, column=0, sticky="ew", padx=8, pady=6)
+
+        ttk.Separator(frame).grid(row=19, column=0, sticky="ew", padx=8, pady=10)
+        ttk.Label(frame, text="Graph / Seed Initialization").grid(row=20, column=0, sticky="w", padx=8)
+        self.graph_button = ttk.Button(frame, text="Build Graph + Initialize Seed Poses", command=build_graph_and_seed)
+        self.graph_button.grid(row=21, column=0, sticky="ew", padx=8, pady=3)
+        self.graph_status_label = ttk.Label(frame, textvariable=self.graph_status_var, justify="left")
+        self.graph_status_label.grid(row=22, column=0, sticky="ew", padx=8, pady=6)
         frame.bind("<Configure>", self._update_wraplengths)
 
     def set_paths(self, folder: str | None, camera: str | None) -> None:
@@ -88,11 +123,33 @@ class ControlPanel(ScrollableFrame):
     def set_detection_running(self, running: bool) -> None:
         self.run_button.configure(state="disabled" if running else "normal")
 
+    def set_pnp_running(self, running: bool) -> None:
+        self.pnp_button.configure(state="disabled" if running else "normal")
+
+    def set_graph_running(self, running: bool) -> None:
+        self.graph_button.configure(state="disabled" if running else "normal")
+
     def detector_type(self) -> str:
         return self.detector_type_var.get()
 
     def dictionary_name(self) -> str:
         return self.dictionary_var.get()
+
+    def marker_size_m(self) -> float:
+        return float(self.marker_size_var.get())
+
+    def anchor_marker_id(self) -> int:
+        return int(self.anchor_marker_var.get())
+
+    def set_initialization_settings(self, marker_size_m: float | None, anchor_marker_id: int) -> None:
+        self.marker_size_var.set("" if marker_size_m is None else f"{marker_size_m:g}")
+        self.anchor_marker_var.set(str(anchor_marker_id))
+
+    def set_pnp_status(self, text: str) -> None:
+        self.pnp_status_var.set(text)
+
+    def set_graph_status(self, text: str) -> None:
+        self.graph_status_var.set(text)
 
     def _on_detector_type_changed(self, _event: tk.Event) -> None:
         if self.detector_type_var.get() == "AprilTag":
@@ -107,3 +164,5 @@ class ControlPanel(ScrollableFrame):
         self.folder_label.configure(wraplength=wraplength)
         self.camera_label.configure(wraplength=wraplength)
         self.status_label.configure(wraplength=wraplength)
+        self.pnp_status_label.configure(wraplength=wraplength)
+        self.graph_status_label.configure(wraplength=wraplength)

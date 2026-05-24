@@ -9,7 +9,7 @@ from pathlib import Path
 import sqlite3
 from typing import Any
 
-from .models import DetectorRunConfig, ImageRecord, MarkerDetection
+from .models import DetectorRunConfig, ImageRecord, MarkerDetection, PnPObservation, SeedCameraPose, SeedMarkerPose
 
 
 PROJECT_DIR_NAME = ".map_builder"
@@ -98,6 +98,49 @@ class ProjectStore:
                 CREATE INDEX IF NOT EXISTS idx_images_detection_status ON images(detection_status);
                 CREATE INDEX IF NOT EXISTS idx_detections_image_id ON detections(image_id);
                 CREATE INDEX IF NOT EXISTS idx_detections_marker_id ON detections(marker_id);
+
+                CREATE TABLE IF NOT EXISTS pnp_observations (
+                    id INTEGER PRIMARY KEY,
+                    image_id INTEGER NOT NULL,
+                    detection_id INTEGER NOT NULL,
+                    marker_id INTEGER NOT NULL,
+                    success INTEGER NOT NULL,
+                    rvec_json TEXT,
+                    tvec_json TEXT,
+                    T_C_M_json TEXT,
+                    reprojection_error_px REAL,
+                    error_message TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(image_id) REFERENCES images(id),
+                    FOREIGN KEY(detection_id) REFERENCES detections(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS seed_camera_poses (
+                    image_id INTEGER PRIMARY KEY,
+                    T_W_C_json TEXT NOT NULL,
+                    source_marker_id INTEGER,
+                    reprojection_error_px REAL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(image_id) REFERENCES images(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS seed_marker_poses (
+                    marker_id INTEGER PRIMARY KEY,
+                    T_W_M_json TEXT NOT NULL,
+                    source_image_id INTEGER,
+                    reprojection_error_px REAL,
+                    is_anchor INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS graph_diagnostics (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_pnp_image_id ON pnp_observations(image_id);
+                CREATE INDEX IF NOT EXISTS idx_pnp_marker_id ON pnp_observations(marker_id);
+                CREATE INDEX IF NOT EXISTS idx_pnp_success ON pnp_observations(success);
                 """
             )
 
@@ -117,6 +160,23 @@ class ProjectStore:
         if path.is_absolute():
             return path
         return self.folder / path
+
+    def set_marker_size_m(self, marker_size_m: float) -> None:
+        size = float(marker_size_m)
+        if size <= 0.0:
+            raise ValueError("Marker side length must be positive.")
+        self.set_metadata("marker_size_m", repr(size))
+
+    def get_marker_size_m(self) -> float | None:
+        value = self.get_metadata("marker_size_m")
+        return None if value is None else float(value)
+
+    def set_anchor_marker_id(self, marker_id: int) -> None:
+        self.set_metadata("anchor_marker_id", str(int(marker_id)))
+
+    def get_anchor_marker_id(self) -> int:
+        value = self.get_metadata("anchor_marker_id")
+        return 0 if value is None else int(value)
 
     def set_metadata(self, key: str, value: str) -> None:
         with self._conn:
@@ -326,6 +386,183 @@ class ProjectStore:
         row = self._conn.execute("SELECT COUNT(*) AS count FROM detections WHERE image_id = ?", (image_id,)).fetchone()
         return int(row["count"])
 
+    def list_detection_rows_for_initialization(self) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            """
+            SELECT detections.id AS detection_id,
+                   detections.image_id,
+                   detections.marker_id,
+                   detections.corners_json,
+                   images.rel_path
+            FROM detections
+            JOIN images ON images.id = detections.image_id
+            WHERE images.ignored = 0
+              AND images.missing = 0
+            ORDER BY images.rel_path COLLATE NOCASE, detections.marker_id
+            """
+        ).fetchall()
+        return [
+            {
+                "detection_id": int(row["detection_id"]),
+                "image_id": int(row["image_id"]),
+                "marker_id": int(row["marker_id"]),
+                "corners": json.loads(str(row["corners_json"])),
+                "rel_path": str(row["rel_path"]),
+            }
+            for row in rows
+        ]
+
+    def replace_pnp_observations(self, observations: list[PnPObservation]) -> None:
+        now = _utc_now()
+        with self._conn:
+            self._conn.execute("DELETE FROM pnp_observations")
+            self._conn.executemany(
+                """
+                INSERT INTO pnp_observations(
+                    image_id,
+                    detection_id,
+                    marker_id,
+                    success,
+                    rvec_json,
+                    tvec_json,
+                    T_C_M_json,
+                    reprojection_error_px,
+                    error_message,
+                    created_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        obs.image_id,
+                        obs.detection_id,
+                        obs.marker_id,
+                        1 if obs.success else 0,
+                        None if obs.rvec is None else json.dumps(obs.rvec),
+                        None if obs.tvec is None else json.dumps(obs.tvec),
+                        None if obs.T_C_M is None else json.dumps(obs.T_C_M),
+                        obs.reprojection_error_px,
+                        obs.error_message,
+                        obs.created_at or now,
+                    )
+                    for obs in observations
+                ],
+            )
+
+    def list_pnp_observations(self, success_only: bool = False) -> list[PnPObservation]:
+        where = "WHERE success = 1" if success_only else ""
+        rows = self._conn.execute(
+            f"""
+            SELECT *
+            FROM pnp_observations
+            {where}
+            ORDER BY image_id, marker_id, id
+            """
+        ).fetchall()
+        return [_pnp_observation_from_row(row) for row in rows]
+
+    def replace_seed_camera_poses(self, poses: list[SeedCameraPose]) -> None:
+        now = _utc_now()
+        with self._conn:
+            self._conn.execute("DELETE FROM seed_camera_poses")
+            self._conn.executemany(
+                """
+                INSERT INTO seed_camera_poses(
+                    image_id,
+                    T_W_C_json,
+                    source_marker_id,
+                    reprojection_error_px,
+                    created_at
+                )
+                VALUES(?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        pose.image_id,
+                        json.dumps(pose.T_W_C),
+                        pose.source_marker_id,
+                        pose.reprojection_error_px,
+                        pose.created_at or now,
+                    )
+                    for pose in poses
+                ],
+            )
+
+    def replace_seed_marker_poses(self, poses: list[SeedMarkerPose]) -> None:
+        now = _utc_now()
+        with self._conn:
+            self._conn.execute("DELETE FROM seed_marker_poses")
+            self._conn.executemany(
+                """
+                INSERT INTO seed_marker_poses(
+                    marker_id,
+                    T_W_M_json,
+                    source_image_id,
+                    reprojection_error_px,
+                    is_anchor,
+                    created_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        pose.marker_id,
+                        json.dumps(pose.T_W_M),
+                        pose.source_image_id,
+                        pose.reprojection_error_px,
+                        1 if pose.is_anchor else 0,
+                        pose.created_at or now,
+                    )
+                    for pose in poses
+                ],
+            )
+
+    def get_seed_camera_poses(self) -> list[SeedCameraPose]:
+        rows = self._conn.execute("SELECT * FROM seed_camera_poses ORDER BY image_id").fetchall()
+        return [
+            SeedCameraPose(
+                image_id=int(row["image_id"]),
+                T_W_C=json.loads(str(row["T_W_C_json"])),
+                source_marker_id=None if row["source_marker_id"] is None else int(row["source_marker_id"]),
+                reprojection_error_px=None
+                if row["reprojection_error_px"] is None
+                else float(row["reprojection_error_px"]),
+                created_at=str(row["created_at"]),
+            )
+            for row in rows
+        ]
+
+    def get_seed_marker_poses(self) -> list[SeedMarkerPose]:
+        rows = self._conn.execute("SELECT * FROM seed_marker_poses ORDER BY marker_id").fetchall()
+        return [
+            SeedMarkerPose(
+                marker_id=int(row["marker_id"]),
+                T_W_M=json.loads(str(row["T_W_M_json"])),
+                source_image_id=None if row["source_image_id"] is None else int(row["source_image_id"]),
+                reprojection_error_px=None
+                if row["reprojection_error_px"] is None
+                else float(row["reprojection_error_px"]),
+                is_anchor=bool(row["is_anchor"]),
+                created_at=str(row["created_at"]),
+            )
+            for row in rows
+        ]
+
+    def set_graph_diagnostics(self, values: dict[str, Any]) -> None:
+        with self._conn:
+            self._conn.execute("DELETE FROM graph_diagnostics")
+            self._conn.executemany(
+                """
+                INSERT INTO graph_diagnostics(key, value)
+                VALUES(?, ?)
+                """,
+                [(key, json.dumps(value)) for key, value in values.items()],
+            )
+
+    def get_graph_diagnostics(self) -> dict[str, Any]:
+        rows = self._conn.execute("SELECT key, value FROM graph_diagnostics ORDER BY key").fetchall()
+        return {str(row["key"]): json.loads(str(row["value"])) for row in rows}
+
 
 def _image_record_from_row(row: sqlite3.Row) -> ImageRecord:
     return ImageRecord(
@@ -341,6 +578,22 @@ def _image_record_from_row(row: sqlite3.Row) -> ImageRecord:
         modified_since_detection=bool(row["modified_since_detection"]),
         indexed_at=str(row["indexed_at"]),
         marker_count=int(row["marker_count"]) if "marker_count" in row.keys() else 0,
+    )
+
+
+def _pnp_observation_from_row(row: sqlite3.Row) -> PnPObservation:
+    return PnPObservation(
+        id=int(row["id"]),
+        image_id=int(row["image_id"]),
+        detection_id=int(row["detection_id"]),
+        marker_id=int(row["marker_id"]),
+        success=bool(row["success"]),
+        rvec=None if row["rvec_json"] is None else json.loads(str(row["rvec_json"])),
+        tvec=None if row["tvec_json"] is None else json.loads(str(row["tvec_json"])),
+        T_C_M=None if row["T_C_M_json"] is None else json.loads(str(row["T_C_M_json"])),
+        reprojection_error_px=None if row["reprojection_error_px"] is None else float(row["reprojection_error_px"]),
+        error_message=None if row["error_message"] is None else str(row["error_message"]),
+        created_at=str(row["created_at"]),
     )
 
 
