@@ -107,12 +107,21 @@ class ObservationGraphSummary:
 
 @dataclass(frozen=True)
 class BAConfig:
-    robust_loss_type: str = "Huber"
+    backend_name: str = "pyceres"
+    robust_loss_type: str = "huber"
     robust_loss_scale_px: float = 3.0
     corner_outlier_threshold_px: float = 10.0
-    marker_outlier_threshold_px: float = 5.0
+    marker_observation_outlier_threshold_px: float = 5.0
     run_outlier_second_pass: bool = True
     max_num_iterations: int = 100
+    finite_diff_step: float = 1e-6
+    invalid_projection_penalty_px: float = 1e6
+    function_tolerance: float = 1e-8
+    gradient_tolerance: float = 1e-10
+    parameter_tolerance: float = 1e-10
+    num_threads: int = 1
+    linear_solver_type: str = "sparse_schur"
+    minimizer_progress_to_stdout: bool = False
 
 
 @dataclass(frozen=True)
@@ -130,10 +139,12 @@ class BARunSummary:
     num_observations: int
     num_corners: int
     num_outlier_observations: int
+    backend_name: str | None
     robust_loss_type: str | None
     robust_loss_scale_px: float | None
     corner_outlier_threshold_px: float | None
-    marker_outlier_threshold_px: float | None
+    marker_observation_outlier_threshold_px: float | None
+    solver_report: str | None = None
     error_message: str | None = None
 
 
@@ -173,3 +184,4 @@ class BAResult:
     optimized_marker_poses: list[OptimizedMarkerPose]
     optimized_camera_poses: list[OptimizedCameraPose]
     reprojection_errors: list[ReprojectionErrorRecord]
+    backend_name: str = "pyceres"

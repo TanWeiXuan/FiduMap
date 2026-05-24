@@ -159,6 +159,7 @@ class ProjectStore:
                     started_at TEXT NOT NULL,
                     completed_at TEXT,
                     success INTEGER NOT NULL,
+                    backend_name TEXT,
                     num_iterations INTEGER,
                     initial_cost REAL,
                     final_cost REAL,
@@ -171,7 +172,9 @@ class ProjectStore:
                     robust_loss_type TEXT,
                     robust_loss_scale_px REAL,
                     corner_outlier_threshold_px REAL,
+                    marker_observation_outlier_threshold_px REAL,
                     marker_outlier_threshold_px REAL,
+                    solver_report TEXT,
                     error_message TEXT
                 );
 
@@ -212,6 +215,14 @@ class ProjectStore:
                 CREATE INDEX IF NOT EXISTS idx_reprojection_errors_ba ON reprojection_errors(ba_run_id);
                 """
             )
+            self._ensure_column("ba_runs", "backend_name", "TEXT")
+            self._ensure_column("ba_runs", "marker_observation_outlier_threshold_px", "REAL")
+            self._ensure_column("ba_runs", "solver_report", "TEXT")
+
+    def _ensure_column(self, table_name: str, column_name: str, column_type: str) -> None:
+        rows = self._conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        if column_name not in {str(row["name"]) for row in rows}:
+            self._conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
 
     @property
     def connection(self) -> sqlite3.Connection:
@@ -248,9 +259,18 @@ class ProjectStore:
                     "robust_loss_type": config.robust_loss_type,
                     "robust_loss_scale_px": config.robust_loss_scale_px,
                     "corner_outlier_threshold_px": config.corner_outlier_threshold_px,
-                    "marker_outlier_threshold_px": config.marker_outlier_threshold_px,
+                    "marker_observation_outlier_threshold_px": config.marker_observation_outlier_threshold_px,
                     "run_outlier_second_pass": config.run_outlier_second_pass,
                     "max_num_iterations": config.max_num_iterations,
+                    "backend_name": config.backend_name,
+                    "finite_diff_step": config.finite_diff_step,
+                    "invalid_projection_penalty_px": config.invalid_projection_penalty_px,
+                    "function_tolerance": config.function_tolerance,
+                    "gradient_tolerance": config.gradient_tolerance,
+                    "parameter_tolerance": config.parameter_tolerance,
+                    "num_threads": config.num_threads,
+                    "linear_solver_type": config.linear_solver_type,
+                    "minimizer_progress_to_stdout": config.minimizer_progress_to_stdout,
                 },
                 sort_keys=True,
             ),
@@ -261,6 +281,8 @@ class ProjectStore:
         if value is None:
             return BAConfig()
         data = json.loads(value)
+        if "marker_outlier_threshold_px" in data and "marker_observation_outlier_threshold_px" not in data:
+            data["marker_observation_outlier_threshold_px"] = data.pop("marker_outlier_threshold_px")
         return BAConfig(**data)
 
     def set_anchor_marker_id(self, marker_id: int | None) -> None:
@@ -699,19 +721,23 @@ class ProjectStore:
                 INSERT INTO ba_runs(
                     started_at,
                     success,
+                    backend_name,
                     robust_loss_type,
                     robust_loss_scale_px,
                     corner_outlier_threshold_px,
+                    marker_observation_outlier_threshold_px,
                     marker_outlier_threshold_px
                 )
-                VALUES(?, 0, ?, ?, ?, ?)
+                VALUES(?, 0, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     _utc_now(),
+                    config.backend_name,
                     config.robust_loss_type,
                     config.robust_loss_scale_px,
                     config.corner_outlier_threshold_px,
-                    config.marker_outlier_threshold_px,
+                    config.marker_observation_outlier_threshold_px,
+                    config.marker_observation_outlier_threshold_px,
                 ),
             )
         return int(cur.lastrowid)
@@ -729,6 +755,7 @@ class ProjectStore:
         num_observations: int = 0,
         num_corners: int = 0,
         num_outlier_observations: int = 0,
+        solver_report: str | None = None,
         error_message: str | None = None,
     ) -> None:
         with self._conn:
@@ -746,6 +773,7 @@ class ProjectStore:
                     num_observations = ?,
                     num_corners = ?,
                     num_outlier_observations = ?,
+                    solver_report = ?,
                     error_message = ?
                 WHERE id = ?
                 """,
@@ -761,6 +789,7 @@ class ProjectStore:
                     num_observations,
                     num_corners,
                     num_outlier_observations,
+                    solver_report,
                     error_message,
                     ba_run_id,
                 ),
@@ -936,14 +965,16 @@ def _ba_run_summary_from_row(row: sqlite3.Row) -> BARunSummary:
         num_observations=int(row["num_observations"]),
         num_corners=int(row["num_corners"]),
         num_outlier_observations=int(row["num_outlier_observations"]),
+        backend_name=None if row["backend_name"] is None else str(row["backend_name"]),
         robust_loss_type=None if row["robust_loss_type"] is None else str(row["robust_loss_type"]),
         robust_loss_scale_px=None if row["robust_loss_scale_px"] is None else float(row["robust_loss_scale_px"]),
         corner_outlier_threshold_px=None
         if row["corner_outlier_threshold_px"] is None
         else float(row["corner_outlier_threshold_px"]),
-        marker_outlier_threshold_px=None
-        if row["marker_outlier_threshold_px"] is None
-        else float(row["marker_outlier_threshold_px"]),
+        marker_observation_outlier_threshold_px=None
+        if row["marker_observation_outlier_threshold_px"] is None
+        else float(row["marker_observation_outlier_threshold_px"]),
+        solver_report=None if row["solver_report"] is None else str(row["solver_report"]),
         error_message=None if row["error_message"] is None else str(row["error_message"]),
     )
 

@@ -39,25 +39,25 @@ class SE3:
 
     @classmethod
     def exp(cls, xi: Any) -> "SE3":
-        """Create a pose from a simple rotation-vector + translation parameter.
+        """Create a pose from a simple translation + rotation-vector parameter.
 
         This is a pragmatic optimizer parameterization, not a coupled Lie
-        exponential: ``xi[:3]`` is an OpenCV Rodrigues rotation vector and
-        ``xi[3:]`` is translation.
+        exponential: ``xi[:3]`` is translation rho and ``xi[3:]`` is an OpenCV
+        Rodrigues rotation vector phi.
         """
 
         xi_arr = np.asarray(xi, dtype=float).reshape(6)
-        return cls.from_rvec_tvec(xi_arr[:3], xi_arr[3:])
+        return cls.from_rvec_tvec(xi_arr[3:], xi_arr[:3])
 
     def log(self) -> np.ndarray:
-        """Return ``[rvec_x, rvec_y, rvec_z, tx, ty, tz]``."""
+        """Return ``[tx, ty, tz, rvec_x, rvec_y, rvec_z]``."""
 
         try:
             import cv2  # type: ignore[import-not-found]
         except ImportError as exc:
             raise RuntimeError("OpenCV is required to convert SE3 to rvec/tvec.") from exc
         rvec, _jacobian = cv2.Rodrigues(self.R)
-        return np.concatenate([rvec.reshape(3), self.t])
+        return np.concatenate([self.t, rvec.reshape(3)])
 
     def as_matrix(self) -> np.ndarray:
         matrix = np.eye(4, dtype=float)

@@ -36,7 +36,7 @@ class ControlPanel(ScrollableFrame):
         self.pnp_status_var = tk.StringVar(value="PnP not run")
         self.graph_status_var = tk.StringVar(value="Graph not built")
         self.ba_status_var = tk.StringVar(value="BA not run")
-        self.robust_loss_type_var = tk.StringVar(value="Huber")
+        self.robust_loss_type_var = tk.StringVar(value="huber")
         self.robust_loss_scale_var = tk.StringVar(value="3.0")
         self.corner_outlier_threshold_var = tk.StringVar(value="10.0")
         self.marker_outlier_threshold_var = tk.StringVar(value="5.0")
@@ -131,7 +131,7 @@ class ControlPanel(ScrollableFrame):
         ttk.Combobox(
             ba_grid,
             textvariable=self.robust_loss_type_var,
-            values=["none", "Huber", "Cauchy"],
+            values=["none", "huber", "cauchy"],
             state="readonly",
             width=12,
         ).grid(row=0, column=1, sticky="ew", pady=2)
@@ -223,13 +223,13 @@ class ControlPanel(ScrollableFrame):
         robust_loss_type: str,
         robust_loss_scale_px: float,
         corner_outlier_threshold_px: float,
-        marker_outlier_threshold_px: float,
+        marker_observation_outlier_threshold_px: float,
         run_outlier_second_pass: bool,
     ) -> None:
         self.robust_loss_type_var.set(robust_loss_type)
         self.robust_loss_scale_var.set(f"{robust_loss_scale_px:g}")
         self.corner_outlier_threshold_var.set(f"{corner_outlier_threshold_px:g}")
-        self.marker_outlier_threshold_var.set(f"{marker_outlier_threshold_px:g}")
+        self.marker_outlier_threshold_var.set(f"{marker_observation_outlier_threshold_px:g}")
         self.ba_second_pass_var.set(run_outlier_second_pass)
 
     def _on_detector_type_changed(self, _event: tk.Event) -> None:

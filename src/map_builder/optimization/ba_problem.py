@@ -66,3 +66,19 @@ class BAProblem:
                 )
             )
         return np.concatenate(blocks) if blocks else np.zeros(0, dtype=float)
+
+    def with_initial_poses(
+        self,
+        camera_poses: dict[int, SE3],
+        marker_poses: dict[int, SE3],
+    ) -> "BAProblem":
+        return BAProblem(
+            camera_model=self.camera_model,
+            marker_size_m=self.marker_size_m,
+            observations=self.observations,
+            camera_ids=self.camera_ids,
+            marker_ids=self.marker_ids,
+            anchor_marker_id=self.anchor_marker_id,
+            initial_camera_poses=camera_poses,
+            initial_marker_poses=marker_poses,
+        )

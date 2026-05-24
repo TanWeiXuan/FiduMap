@@ -42,7 +42,7 @@ def evaluate_marker_observation_residuals(
         if point_c[2] <= 1e-9:
             residuals.extend([behind_camera_penalty_px, behind_camera_penalty_px])
             continue
-        predicted = camera_model.project(point_c)
+        predicted = camera_model.project(point_c / np.linalg.norm(point_c))
         if not np.all(np.isfinite(predicted)):
             residuals.extend([behind_camera_penalty_px, behind_camera_penalty_px])
             continue

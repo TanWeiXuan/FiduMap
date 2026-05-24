@@ -18,7 +18,7 @@ def test_project_store_ba_results_persist(tmp_path: Path) -> None:
                 robust_loss_type="Cauchy",
                 robust_loss_scale_px=2.0,
                 corner_outlier_threshold_px=11.0,
-                marker_outlier_threshold_px=6.0,
+                marker_observation_outlier_threshold_px=6.0,
                 run_outlier_second_pass=False,
             )
         )

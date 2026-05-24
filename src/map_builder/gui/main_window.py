@@ -117,7 +117,7 @@ class MainWindow(ttk.Frame):
                 ba_config.robust_loss_type,
                 ba_config.robust_loss_scale_px,
                 ba_config.corner_outlier_threshold_px,
-                ba_config.marker_outlier_threshold_px,
+                ba_config.marker_observation_outlier_threshold_px,
                 ba_config.run_outlier_second_pass,
             )
             self.map_3d_viewer.set_project(self.project_folder, self.store)
@@ -410,7 +410,7 @@ class MainWindow(ttk.Frame):
                 robust_loss_type=loss_type,
                 robust_loss_scale_px=loss_scale,
                 corner_outlier_threshold_px=corner_threshold,
-                marker_outlier_threshold_px=marker_threshold,
+                marker_observation_outlier_threshold_px=marker_threshold,
                 run_outlier_second_pass=second_pass,
             )
             self.store.set_ba_config(config)

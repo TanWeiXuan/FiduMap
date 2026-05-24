@@ -20,7 +20,7 @@ from map_builder.project import (
 
 from .ba_problem import BAProblem
 from .outlier_rejection import find_outlier_observations
-from .pyceres_adapter import solve_least_squares
+from .pyceres_backend import solve_marker_ba
 from .residuals import BAObservation, compute_reprojection_error_records, residual_statistics
 
 
@@ -37,19 +37,14 @@ class MapOptimizer:
         try:
             self._notify(progress_callback, "Loading seed poses and detections")
             problem = self._build_problem()
-            x0 = problem.pack_initial()
-            if x0.size == 0:
+            if not problem.camera_ids or not problem.marker_ids:
                 raise RuntimeError("No seed camera/marker poses are available for BA.")
+            if config.backend_name.strip().lower() != "pyceres":
+                raise RuntimeError("Only backend_name='pyceres' is supported by the default BA backend.")
 
-            self._notify(progress_callback, "Running first BA pass")
-            first = solve_least_squares(
-                lambda x: problem.residuals(x),
-                x0,
-                config.robust_loss_type,
-                config.robust_loss_scale_px,
-                config.max_num_iterations,
-            )
-            camera_poses, marker_poses = problem.unpack(first.x)
+            self._notify(progress_callback, "Running first pyceres BA pass")
+            first = solve_marker_ba(problem, config)
+            camera_poses, marker_poses = first.camera_poses, first.marker_poses
             all_records = compute_reprojection_error_records(
                 ba_run_id,
                 self.camera_model,
@@ -61,20 +56,15 @@ class MapOptimizer:
             outliers = find_outlier_observations(
                 all_records,
                 config.corner_outlier_threshold_px,
-                config.marker_outlier_threshold_px,
+                config.marker_observation_outlier_threshold_px,
             )
 
             final = first
             if config.run_outlier_second_pass and outliers:
-                self._notify(progress_callback, f"Running second BA pass without {len(outliers)} outlier observation(s)")
-                final = solve_least_squares(
-                    lambda x: problem.residuals(x, excluded_observations=outliers),
-                    first.x,
-                    config.robust_loss_type,
-                    config.robust_loss_scale_px,
-                    config.max_num_iterations,
-                )
-                camera_poses, marker_poses = problem.unpack(final.x)
+                self._notify(progress_callback, f"Running second pyceres BA pass without {len(outliers)} outlier observation(s)")
+                second_problem = problem.with_initial_poses(camera_poses, marker_poses)
+                final = solve_marker_ba(second_problem, config, excluded_observations=outliers)
+                camera_poses, marker_poses = final.camera_poses, final.marker_poses
 
             records = compute_reprojection_error_records(
                 ba_run_id,
@@ -114,12 +104,13 @@ class MapOptimizer:
                 num_observations=len(problem.observations),
                 num_corners=int(stats["num_corners"] or 0),
                 num_outlier_observations=len(outliers),
-                error_message=None if final.success else final.message,
+                solver_report=final.solver_report,
+                error_message=None if final.success else final.solver_report,
             )
             summary = self.store.get_ba_summary(ba_run_id)
             assert summary is not None
             self._notify(progress_callback, "BA complete")
-            return BAResult(ba_run_id, bool(final.success), summary, optimized_markers, optimized_cameras, records)
+            return BAResult(ba_run_id, bool(final.success), summary, optimized_markers, optimized_cameras, records, "pyceres")
         except Exception as exc:
             self.store.complete_ba_run(ba_run_id, success=False, error_message=str(exc))
             summary = self.store.get_ba_summary(ba_run_id)
