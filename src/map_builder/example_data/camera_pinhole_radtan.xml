@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<camera>
+  <model>pinhole_radtan</model>
+  <image_width>3264</image_width>
+  <image_height>2448</image_height>
+  <intrinsics>
+    <fx>2843.9494630361355</fx>
+    <fy>2833.2346711769796</fy>
+    <cx>1644.752032617869</cx>
+    <cy>1201.0088010828813</cy>
+  </intrinsics>
+  <distortion>
+    <k1>0.09190594342158677</k1>
+    <k2>-0.18998694371119626</k2>
+    <p1>-0.003359507018221999</p1>
+    <p2>0.00038094843742620175</p2>
+    <k3>0.13331959288356715</k3>
+  </distortion>
+</camera>
