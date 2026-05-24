@@ -2,3 +2,4 @@ misc/*
 !misc/.gitkeep
 .pytest_cache/
 __pycache__/
+.map_builder/
