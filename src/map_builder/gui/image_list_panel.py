@@ -53,6 +53,10 @@ class ImageListPanel(ttk.Frame):
 
         self.tree.bind("<<TreeviewSelect>>", lambda _event: selection_changed())
         self.tree.bind("<Button-3>", self._show_context_menu)
+        self.tree.bind("<Enter>", self._bind_mouse_wheel)
+        self.tree.bind("<Leave>", self._unbind_mouse_wheel)
+        self.bind("<Enter>", self._bind_mouse_wheel)
+        self.bind("<Leave>", self._unbind_mouse_wheel)
         self._context_menu = tk.Menu(self, tearoff=False)
         self._context_menu.add_command(label="Ignore selected", command=ignore_selected)
         self._context_menu.add_command(label="Unignore selected", command=unignore_selected)
@@ -95,3 +99,33 @@ class ImageListPanel(ttk.Frame):
         if row and row not in self.tree.selection():
             self.tree.selection_set(row)
         self._context_menu.tk_popup(event.x_root, event.y_root)
+
+    def _bind_mouse_wheel(self, _event: tk.Event) -> None:
+        self.tree.bind_all("<MouseWheel>", self._on_mouse_wheel)
+        self.tree.bind_all("<Button-4>", self._on_mouse_wheel)
+        self.tree.bind_all("<Button-5>", self._on_mouse_wheel)
+
+    def _unbind_mouse_wheel(self, _event: tk.Event) -> None:
+        self.tree.unbind_all("<MouseWheel>")
+        self.tree.unbind_all("<Button-4>")
+        self.tree.unbind_all("<Button-5>")
+
+    def _on_mouse_wheel(self, event: tk.Event) -> str:
+        units = _mouse_wheel_units(event)
+        if units:
+            self.tree.yview_scroll(units, "units")
+        return "break"
+
+
+def _mouse_wheel_units(event: tk.Event) -> int:
+    if getattr(event, "num", None) == 4:
+        return -3
+    if getattr(event, "num", None) == 5:
+        return 3
+
+    delta = getattr(event, "delta", 0)
+    if delta == 0:
+        return 0
+    if abs(delta) >= 120:
+        return -int(delta / 120)
+    return -1 if delta > 0 else 1
