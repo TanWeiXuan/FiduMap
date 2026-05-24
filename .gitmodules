@@ -1,0 +1,3 @@
+[submodule "vendor/PyRansacLib"]
+	path = vendor/PyRansacLib
+	url = https://github.com/TanWeiXuan/PyRansacLib.git
