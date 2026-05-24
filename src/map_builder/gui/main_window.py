@@ -10,9 +10,12 @@ from tkinter import filedialog, messagebox, ttk
 
 from map_builder.camera_models import load_camera_model_xml
 from map_builder.detection import DetectionRunner
+from map_builder.export import export_optimized_marker_map_csv
 from map_builder.initialization import PnPInitializer, build_graph_from_store, initialize_seed_poses_from_store
 from map_builder.initialization.diagnostics import format_graph_diagnostics
-from map_builder.project import DetectorRunConfig, ImageIndexer, ProjectStore
+from map_builder.optimization import MapOptimizer
+from map_builder.optimization.diagnostics import format_ba_summary
+from map_builder.project import BAConfig, DetectorRunConfig, ImageIndexer, ProjectStore
 
 from .control_panel import ControlPanel
 from .image_list_panel import ImageListPanel
@@ -34,6 +37,8 @@ class MainWindow(ttk.Frame):
         self._pnp_thread: threading.Thread | None = None
         self._graph_queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self._graph_thread: threading.Thread | None = None
+        self._ba_queue: queue.Queue[tuple[str, object]] = queue.Queue()
+        self._ba_thread: threading.Thread | None = None
 
         self.root.title("Fiducial Map Builder")
         self.root.geometry("1180x760")
@@ -63,6 +68,8 @@ class MainWindow(ttk.Frame):
             save_initialization_settings=self.save_initialization_settings,
             run_pnp_initialization=self.run_pnp_initialization,
             build_graph_and_seed=self.build_graph_and_seed,
+            run_ba_refinement=self.run_ba_refinement,
+            export_optimized_csv=self.export_optimized_csv,
         )
         self.left_pane.add(self.image_list, weight=3)
         self.left_pane.add(self.controls, weight=1)
@@ -104,6 +111,15 @@ class MainWindow(ttk.Frame):
                 self.store.get_configured_anchor_marker_id(),
             )
             self.controls.set_graph_status(format_graph_diagnostics(self.store.get_graph_diagnostics()))
+            self.controls.set_ba_status(format_ba_summary(self.store.get_ba_summary()))
+            ba_config = self.store.get_ba_config()
+            self.controls.set_ba_config_values(
+                ba_config.robust_loss_type,
+                ba_config.robust_loss_scale_px,
+                ba_config.corner_outlier_threshold_px,
+                ba_config.marker_outlier_threshold_px,
+                ba_config.run_outlier_second_pass,
+            )
             self.map_3d_viewer.set_project(self.project_folder, self.store)
             self.refresh_index()
             self._load_default_or_existing_camera_config()
@@ -378,6 +394,91 @@ class MainWindow(ttk.Frame):
                 messagebox.showerror("Graph Initialization Failed", str(payload))
         if keep_polling:
             self.root.after(100, self._poll_graph_queue)
+
+    def run_ba_refinement(self) -> None:
+        if self.store is None or self.project_folder is None:
+            self.controls.set_ba_status("Choose an image folder first")
+            return
+        if self.camera_config_path is None:
+            self.controls.set_ba_status("Choose a camera config XML first")
+            return
+        if self._ba_thread is not None and self._ba_thread.is_alive():
+            return
+        try:
+            loss_type, loss_scale, corner_threshold, marker_threshold, second_pass = self.controls.ba_config_values()
+            config = BAConfig(
+                robust_loss_type=loss_type,
+                robust_loss_scale_px=loss_scale,
+                corner_outlier_threshold_px=corner_threshold,
+                marker_outlier_threshold_px=marker_threshold,
+                run_outlier_second_pass=second_pass,
+            )
+            self.store.set_ba_config(config)
+        except Exception as exc:
+            messagebox.showerror("Invalid BA Settings", str(exc))
+            return
+        self.controls.set_ba_running(True)
+        self.controls.set_ba_status("Starting BA refinement")
+        self._ba_thread = threading.Thread(target=self._run_ba_worker, args=(self.camera_config_path, config), daemon=True)
+        self._ba_thread.start()
+        self.root.after(100, self._poll_ba_queue)
+
+    def _run_ba_worker(self, camera_path: Path, config: BAConfig) -> None:
+        assert self.project_folder is not None
+        worker_store: ProjectStore | None = None
+        try:
+            camera_model = load_camera_model_xml(camera_path)
+            worker_store = ProjectStore.open(self.project_folder)
+
+            def progress(message: str) -> None:
+                self._ba_queue.put(("progress", message))
+
+            result = MapOptimizer(worker_store, camera_model).run_ba(config, progress)
+            self._ba_queue.put(("done", result.summary))
+        except Exception as exc:
+            self._ba_queue.put(("error", str(exc)))
+        finally:
+            if worker_store is not None:
+                worker_store.close()
+
+    def _poll_ba_queue(self) -> None:
+        keep_polling = self._ba_thread is not None and self._ba_thread.is_alive()
+        while True:
+            try:
+                kind, payload = self._ba_queue.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "progress":
+                self.controls.set_ba_status(str(payload))
+            elif kind == "done":
+                self.controls.set_ba_running(False)
+                self.controls.set_ba_status(format_ba_summary(payload))  # type: ignore[arg-type]
+                self.map_3d_viewer.request_refresh()
+            elif kind == "error":
+                self.controls.set_ba_running(False)
+                self.controls.set_ba_status("BA refinement failed")
+                messagebox.showerror("BA Refinement Failed", str(payload))
+        if keep_polling:
+            self.root.after(100, self._poll_ba_queue)
+
+    def export_optimized_csv(self) -> None:
+        if self.store is None:
+            self.controls.set_ba_status("Choose an image folder first")
+            return
+        output = filedialog.asksaveasfilename(
+            title="Export optimized marker map CSV",
+            defaultextension=".csv",
+            initialfile="marker_map_points.csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        )
+        if not output:
+            return
+        try:
+            count = export_optimized_marker_map_csv(self.store, Path(output))
+            self.controls.set_ba_status(f"Exported {count} marker corner point(s) to CSV")
+            messagebox.showinfo("CSV Export Complete", f"Exported {count} marker corner point(s).")
+        except Exception as exc:
+            messagebox.showerror("CSV Export Failed", str(exc))
 
     def _load_default_or_existing_camera_config(self) -> None:
         if self.store is None or self.project_folder is None:

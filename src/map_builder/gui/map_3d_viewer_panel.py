@@ -24,6 +24,7 @@ class Map3DViewerPanel(ttk.Frame):
         self.show_markers_var = tk.BooleanVar(value=True)
         self.show_labels_var = tk.BooleanVar(value=True)
         self.selected_only_var = tk.BooleanVar(value=False)
+        self.pose_source_var = tk.StringVar(value="Optimized")
         self._matplotlib_ready = False
         self._dirty = True
         self._pending_refresh_id: str | None = None
@@ -31,17 +32,25 @@ class Map3DViewerPanel(ttk.Frame):
 
         controls = ttk.Frame(self)
         controls.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
-        controls.columnconfigure(4, weight=1)
+        controls.columnconfigure(5, weight=1)
         ttk.Button(controls, text="Refresh 3D View", command=lambda: self.refresh(force=True)).grid(row=0, column=0, padx=(0, 8))
-        ttk.Checkbutton(controls, text="Cameras", variable=self.show_cameras_var, command=lambda: self.refresh(force=True)).grid(row=0, column=1)
-        ttk.Checkbutton(controls, text="Markers", variable=self.show_markers_var, command=lambda: self.refresh(force=True)).grid(row=0, column=2)
-        ttk.Checkbutton(controls, text="Labels", variable=self.show_labels_var, command=lambda: self.refresh(force=True)).grid(row=0, column=3)
+        ttk.Combobox(
+            controls,
+            textvariable=self.pose_source_var,
+            values=["Optimized", "Seed"],
+            state="readonly",
+            width=10,
+        ).grid(row=0, column=1, padx=(0, 8))
+        ttk.Checkbutton(controls, text="Cameras", variable=self.show_cameras_var, command=lambda: self.refresh(force=True)).grid(row=0, column=2)
+        ttk.Checkbutton(controls, text="Markers", variable=self.show_markers_var, command=lambda: self.refresh(force=True)).grid(row=0, column=3)
+        ttk.Checkbutton(controls, text="Labels", variable=self.show_labels_var, command=lambda: self.refresh(force=True)).grid(row=0, column=4)
         ttk.Checkbutton(
             controls,
             text="Selected image only",
             variable=self.selected_only_var,
             command=lambda: self.refresh(force=True),
-        ).grid(row=0, column=4, sticky="w")
+        ).grid(row=0, column=5, sticky="w")
+        self.pose_source_var.trace_add("write", lambda *_args: self.refresh(force=True))
 
         self.plot_frame = ttk.Frame(self)
         self.plot_frame.grid(row=1, column=0, sticky="nsew")
@@ -140,8 +149,11 @@ class Map3DViewerPanel(ttk.Frame):
                 "seed_markers": [],
                 "selected_pnp_observations": [],
             }
-        seed_cameras = self.store.get_seed_camera_poses()
-        seed_markers = self.store.get_seed_marker_poses()
+        use_optimized = self.pose_source_var.get() == "Optimized"
+        optimized_cameras = self.store.get_optimized_camera_poses() if use_optimized else []
+        optimized_markers = self.store.get_optimized_marker_poses() if use_optimized else []
+        seed_cameras = optimized_cameras or self.store.get_seed_camera_poses()
+        seed_markers = optimized_markers or self.store.get_seed_marker_poses()
         observations = []
         if not seed_cameras and not seed_markers and self.selected_image_id is not None:
             observations = [
@@ -166,14 +178,9 @@ class Map3DViewerPanel(ttk.Frame):
             "show_markers": self.show_markers_var.get(),
             "show_labels": self.show_labels_var.get(),
             "selected_only": self.selected_only_var.get(),
-            "seed_cameras": [
-                [pose.image_id, pose.T_W_C, pose.source_marker_id, pose.reprojection_error_px]
-                for pose in render_data["seed_cameras"]
-            ],
-            "seed_markers": [
-                [pose.marker_id, pose.T_W_M, pose.source_image_id, pose.reprojection_error_px, pose.is_anchor]
-                for pose in render_data["seed_markers"]
-            ],
+            "pose_source": self.pose_source_var.get(),
+            "seed_cameras": [_camera_pose_key(pose) for pose in render_data["seed_cameras"]],
+            "seed_markers": [_marker_pose_key(pose) for pose in render_data["seed_markers"]],
             "selected_pnp": [
                 [obs.id, obs.image_id, obs.marker_id, obs.T_C_M, obs.reprojection_error_px]
                 for obs in render_data["selected_pnp_observations"]
@@ -256,3 +263,24 @@ class Map3DViewerPanel(ttk.Frame):
         self.axes.set_xlim(center[0] - radius, center[0] + radius)
         self.axes.set_ylim(center[1] - radius, center[1] + radius)
         self.axes.set_zlim(center[2] - radius, center[2] + radius)
+
+
+def _camera_pose_key(pose: Any) -> list[Any]:
+    return [
+        pose.image_id,
+        pose.T_W_C,
+        getattr(pose, "source_marker_id", None),
+        getattr(pose, "reprojection_error_px", None),
+        getattr(pose, "ba_run_id", None),
+    ]
+
+
+def _marker_pose_key(pose: Any) -> list[Any]:
+    return [
+        pose.marker_id,
+        pose.T_W_M,
+        getattr(pose, "source_image_id", None),
+        getattr(pose, "reprojection_error_px", None),
+        getattr(pose, "is_anchor", False),
+        getattr(pose, "ba_run_id", None),
+    ]

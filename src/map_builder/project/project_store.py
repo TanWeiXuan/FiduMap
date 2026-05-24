@@ -9,7 +9,19 @@ from pathlib import Path
 import sqlite3
 from typing import Any
 
-from .models import DetectorRunConfig, ImageRecord, MarkerDetection, PnPObservation, SeedCameraPose, SeedMarkerPose
+from .models import (
+    BAConfig,
+    BARunSummary,
+    DetectorRunConfig,
+    ImageRecord,
+    MarkerDetection,
+    OptimizedCameraPose,
+    OptimizedMarkerPose,
+    PnPObservation,
+    ReprojectionErrorRecord,
+    SeedCameraPose,
+    SeedMarkerPose,
+)
 
 
 PROJECT_DIR_NAME = ".map_builder"
@@ -141,6 +153,63 @@ class ProjectStore:
                 CREATE INDEX IF NOT EXISTS idx_pnp_image_id ON pnp_observations(image_id);
                 CREATE INDEX IF NOT EXISTS idx_pnp_marker_id ON pnp_observations(marker_id);
                 CREATE INDEX IF NOT EXISTS idx_pnp_success ON pnp_observations(success);
+
+                CREATE TABLE IF NOT EXISTS ba_runs (
+                    id INTEGER PRIMARY KEY,
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    success INTEGER NOT NULL,
+                    num_iterations INTEGER,
+                    initial_cost REAL,
+                    final_cost REAL,
+                    mean_reprojection_error_px REAL,
+                    median_reprojection_error_px REAL,
+                    max_reprojection_error_px REAL,
+                    num_observations INTEGER NOT NULL DEFAULT 0,
+                    num_corners INTEGER NOT NULL DEFAULT 0,
+                    num_outlier_observations INTEGER NOT NULL DEFAULT 0,
+                    robust_loss_type TEXT,
+                    robust_loss_scale_px REAL,
+                    corner_outlier_threshold_px REAL,
+                    marker_outlier_threshold_px REAL,
+                    error_message TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS optimized_camera_poses (
+                    image_id INTEGER NOT NULL,
+                    ba_run_id INTEGER NOT NULL,
+                    T_W_C_json TEXT NOT NULL,
+                    PRIMARY KEY(image_id, ba_run_id),
+                    FOREIGN KEY(image_id) REFERENCES images(id),
+                    FOREIGN KEY(ba_run_id) REFERENCES ba_runs(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS optimized_marker_poses (
+                    marker_id INTEGER NOT NULL,
+                    ba_run_id INTEGER NOT NULL,
+                    T_W_M_json TEXT NOT NULL,
+                    is_anchor INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(marker_id, ba_run_id),
+                    FOREIGN KEY(ba_run_id) REFERENCES ba_runs(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS reprojection_errors (
+                    id INTEGER PRIMARY KEY,
+                    ba_run_id INTEGER NOT NULL,
+                    image_id INTEGER NOT NULL,
+                    marker_id INTEGER NOT NULL,
+                    corner_index_detector_order INTEGER NOT NULL,
+                    error_px REAL NOT NULL,
+                    residual_x_px REAL NOT NULL,
+                    residual_y_px REAL NOT NULL,
+                    is_outlier INTEGER NOT NULL DEFAULT 0,
+                    FOREIGN KEY(ba_run_id) REFERENCES ba_runs(id),
+                    FOREIGN KEY(image_id) REFERENCES images(id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_optimized_marker_ba ON optimized_marker_poses(ba_run_id);
+                CREATE INDEX IF NOT EXISTS idx_optimized_camera_ba ON optimized_camera_poses(ba_run_id);
+                CREATE INDEX IF NOT EXISTS idx_reprojection_errors_ba ON reprojection_errors(ba_run_id);
                 """
             )
 
@@ -170,6 +239,29 @@ class ProjectStore:
     def get_marker_size_m(self) -> float | None:
         value = self.get_metadata("marker_size_m")
         return None if value is None else float(value)
+
+    def set_ba_config(self, config: BAConfig) -> None:
+        self.set_metadata(
+            "ba_config",
+            json.dumps(
+                {
+                    "robust_loss_type": config.robust_loss_type,
+                    "robust_loss_scale_px": config.robust_loss_scale_px,
+                    "corner_outlier_threshold_px": config.corner_outlier_threshold_px,
+                    "marker_outlier_threshold_px": config.marker_outlier_threshold_px,
+                    "run_outlier_second_pass": config.run_outlier_second_pass,
+                    "max_num_iterations": config.max_num_iterations,
+                },
+                sort_keys=True,
+            ),
+        )
+
+    def get_ba_config(self) -> BAConfig:
+        value = self.get_metadata("ba_config")
+        if value is None:
+            return BAConfig()
+        data = json.loads(value)
+        return BAConfig(**data)
 
     def set_anchor_marker_id(self, marker_id: int | None) -> None:
         if marker_id is None:
@@ -600,6 +692,195 @@ class ProjectStore:
         rows = self._conn.execute("SELECT key, value FROM graph_diagnostics ORDER BY key").fetchall()
         return {str(row["key"]): json.loads(str(row["value"])) for row in rows}
 
+    def create_ba_run(self, config: BAConfig) -> int:
+        with self._conn:
+            cur = self._conn.execute(
+                """
+                INSERT INTO ba_runs(
+                    started_at,
+                    success,
+                    robust_loss_type,
+                    robust_loss_scale_px,
+                    corner_outlier_threshold_px,
+                    marker_outlier_threshold_px
+                )
+                VALUES(?, 0, ?, ?, ?, ?)
+                """,
+                (
+                    _utc_now(),
+                    config.robust_loss_type,
+                    config.robust_loss_scale_px,
+                    config.corner_outlier_threshold_px,
+                    config.marker_outlier_threshold_px,
+                ),
+            )
+        return int(cur.lastrowid)
+
+    def complete_ba_run(
+        self,
+        ba_run_id: int,
+        success: bool,
+        num_iterations: int | None = None,
+        initial_cost: float | None = None,
+        final_cost: float | None = None,
+        mean_reprojection_error_px: float | None = None,
+        median_reprojection_error_px: float | None = None,
+        max_reprojection_error_px: float | None = None,
+        num_observations: int = 0,
+        num_corners: int = 0,
+        num_outlier_observations: int = 0,
+        error_message: str | None = None,
+    ) -> None:
+        with self._conn:
+            self._conn.execute(
+                """
+                UPDATE ba_runs
+                SET completed_at = ?,
+                    success = ?,
+                    num_iterations = ?,
+                    initial_cost = ?,
+                    final_cost = ?,
+                    mean_reprojection_error_px = ?,
+                    median_reprojection_error_px = ?,
+                    max_reprojection_error_px = ?,
+                    num_observations = ?,
+                    num_corners = ?,
+                    num_outlier_observations = ?,
+                    error_message = ?
+                WHERE id = ?
+                """,
+                (
+                    _utc_now(),
+                    1 if success else 0,
+                    num_iterations,
+                    initial_cost,
+                    final_cost,
+                    mean_reprojection_error_px,
+                    median_reprojection_error_px,
+                    max_reprojection_error_px,
+                    num_observations,
+                    num_corners,
+                    num_outlier_observations,
+                    error_message,
+                    ba_run_id,
+                ),
+            )
+
+    def get_latest_successful_ba_run_id(self) -> int | None:
+        row = self._conn.execute(
+            "SELECT id FROM ba_runs WHERE success = 1 ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return None if row is None else int(row["id"])
+
+    def replace_optimized_marker_poses(self, ba_run_id: int, poses: list[OptimizedMarkerPose]) -> None:
+        with self._conn:
+            self._conn.execute("DELETE FROM optimized_marker_poses WHERE ba_run_id = ?", (ba_run_id,))
+            self._conn.executemany(
+                """
+                INSERT INTO optimized_marker_poses(marker_id, ba_run_id, T_W_M_json, is_anchor)
+                VALUES(?, ?, ?, ?)
+                """,
+                [
+                    (pose.marker_id, ba_run_id, json.dumps(pose.T_W_M), 1 if pose.is_anchor else 0)
+                    for pose in poses
+                ],
+            )
+
+    def replace_optimized_camera_poses(self, ba_run_id: int, poses: list[OptimizedCameraPose]) -> None:
+        with self._conn:
+            self._conn.execute("DELETE FROM optimized_camera_poses WHERE ba_run_id = ?", (ba_run_id,))
+            self._conn.executemany(
+                """
+                INSERT INTO optimized_camera_poses(image_id, ba_run_id, T_W_C_json)
+                VALUES(?, ?, ?)
+                """,
+                [(pose.image_id, ba_run_id, json.dumps(pose.T_W_C)) for pose in poses],
+            )
+
+    def get_optimized_marker_poses(self, ba_run_id: int | None = None) -> list[OptimizedMarkerPose]:
+        resolved_id = ba_run_id if ba_run_id is not None else self.get_latest_successful_ba_run_id()
+        if resolved_id is None:
+            return []
+        rows = self._conn.execute(
+            "SELECT * FROM optimized_marker_poses WHERE ba_run_id = ? ORDER BY marker_id",
+            (resolved_id,),
+        ).fetchall()
+        return [
+            OptimizedMarkerPose(
+                marker_id=int(row["marker_id"]),
+                ba_run_id=int(row["ba_run_id"]),
+                T_W_M=json.loads(str(row["T_W_M_json"])),
+                is_anchor=bool(row["is_anchor"]),
+            )
+            for row in rows
+        ]
+
+    def get_optimized_camera_poses(self, ba_run_id: int | None = None) -> list[OptimizedCameraPose]:
+        resolved_id = ba_run_id if ba_run_id is not None else self.get_latest_successful_ba_run_id()
+        if resolved_id is None:
+            return []
+        rows = self._conn.execute(
+            "SELECT * FROM optimized_camera_poses WHERE ba_run_id = ? ORDER BY image_id",
+            (resolved_id,),
+        ).fetchall()
+        return [
+            OptimizedCameraPose(
+                image_id=int(row["image_id"]),
+                ba_run_id=int(row["ba_run_id"]),
+                T_W_C=json.loads(str(row["T_W_C_json"])),
+            )
+            for row in rows
+        ]
+
+    def replace_reprojection_errors(self, ba_run_id: int, errors: list[ReprojectionErrorRecord]) -> None:
+        with self._conn:
+            self._conn.execute("DELETE FROM reprojection_errors WHERE ba_run_id = ?", (ba_run_id,))
+            self._conn.executemany(
+                """
+                INSERT INTO reprojection_errors(
+                    ba_run_id,
+                    image_id,
+                    marker_id,
+                    corner_index_detector_order,
+                    error_px,
+                    residual_x_px,
+                    residual_y_px,
+                    is_outlier
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        ba_run_id,
+                        err.image_id,
+                        err.marker_id,
+                        err.corner_index_detector_order,
+                        err.error_px,
+                        err.residual_x_px,
+                        err.residual_y_px,
+                        1 if err.is_outlier else 0,
+                    )
+                    for err in errors
+                ],
+            )
+
+    def get_reprojection_errors(self, ba_run_id: int | None = None) -> list[ReprojectionErrorRecord]:
+        resolved_id = ba_run_id if ba_run_id is not None else self.get_latest_successful_ba_run_id()
+        if resolved_id is None:
+            return []
+        rows = self._conn.execute(
+            "SELECT * FROM reprojection_errors WHERE ba_run_id = ? ORDER BY image_id, marker_id, corner_index_detector_order",
+            (resolved_id,),
+        ).fetchall()
+        return [_reprojection_error_from_row(row) for row in rows]
+
+    def get_ba_summary(self, ba_run_id: int | None = None) -> BARunSummary | None:
+        resolved_id = ba_run_id if ba_run_id is not None else self.get_latest_successful_ba_run_id()
+        if resolved_id is None:
+            return None
+        row = self._conn.execute("SELECT * FROM ba_runs WHERE id = ?", (resolved_id,)).fetchone()
+        return None if row is None else _ba_run_summary_from_row(row)
+
 
 def _image_record_from_row(row: sqlite3.Row) -> ImageRecord:
     return ImageRecord(
@@ -631,6 +912,53 @@ def _pnp_observation_from_row(row: sqlite3.Row) -> PnPObservation:
         reprojection_error_px=None if row["reprojection_error_px"] is None else float(row["reprojection_error_px"]),
         error_message=None if row["error_message"] is None else str(row["error_message"]),
         created_at=str(row["created_at"]),
+    )
+
+
+def _ba_run_summary_from_row(row: sqlite3.Row) -> BARunSummary:
+    return BARunSummary(
+        id=int(row["id"]),
+        started_at=str(row["started_at"]),
+        completed_at=None if row["completed_at"] is None else str(row["completed_at"]),
+        success=bool(row["success"]),
+        num_iterations=None if row["num_iterations"] is None else int(row["num_iterations"]),
+        initial_cost=None if row["initial_cost"] is None else float(row["initial_cost"]),
+        final_cost=None if row["final_cost"] is None else float(row["final_cost"]),
+        mean_reprojection_error_px=None
+        if row["mean_reprojection_error_px"] is None
+        else float(row["mean_reprojection_error_px"]),
+        median_reprojection_error_px=None
+        if row["median_reprojection_error_px"] is None
+        else float(row["median_reprojection_error_px"]),
+        max_reprojection_error_px=None
+        if row["max_reprojection_error_px"] is None
+        else float(row["max_reprojection_error_px"]),
+        num_observations=int(row["num_observations"]),
+        num_corners=int(row["num_corners"]),
+        num_outlier_observations=int(row["num_outlier_observations"]),
+        robust_loss_type=None if row["robust_loss_type"] is None else str(row["robust_loss_type"]),
+        robust_loss_scale_px=None if row["robust_loss_scale_px"] is None else float(row["robust_loss_scale_px"]),
+        corner_outlier_threshold_px=None
+        if row["corner_outlier_threshold_px"] is None
+        else float(row["corner_outlier_threshold_px"]),
+        marker_outlier_threshold_px=None
+        if row["marker_outlier_threshold_px"] is None
+        else float(row["marker_outlier_threshold_px"]),
+        error_message=None if row["error_message"] is None else str(row["error_message"]),
+    )
+
+
+def _reprojection_error_from_row(row: sqlite3.Row) -> ReprojectionErrorRecord:
+    return ReprojectionErrorRecord(
+        id=int(row["id"]),
+        ba_run_id=int(row["ba_run_id"]),
+        image_id=int(row["image_id"]),
+        marker_id=int(row["marker_id"]),
+        corner_index_detector_order=int(row["corner_index_detector_order"]),
+        error_px=float(row["error_px"]),
+        residual_x_px=float(row["residual_x_px"]),
+        residual_y_px=float(row["residual_y_px"]),
+        is_outlier=bool(row["is_outlier"]),
     )
 
 

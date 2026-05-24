@@ -103,3 +103,73 @@ class ObservationGraphSummary:
     disconnected_markers: list[int]
     observations_per_marker: dict[int, int] = field(default_factory=dict)
     observations_per_image: dict[int, int] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class BAConfig:
+    robust_loss_type: str = "Huber"
+    robust_loss_scale_px: float = 3.0
+    corner_outlier_threshold_px: float = 10.0
+    marker_outlier_threshold_px: float = 5.0
+    run_outlier_second_pass: bool = True
+    max_num_iterations: int = 100
+
+
+@dataclass(frozen=True)
+class BARunSummary:
+    id: int
+    started_at: str
+    completed_at: str | None
+    success: bool
+    num_iterations: int | None
+    initial_cost: float | None
+    final_cost: float | None
+    mean_reprojection_error_px: float | None
+    median_reprojection_error_px: float | None
+    max_reprojection_error_px: float | None
+    num_observations: int
+    num_corners: int
+    num_outlier_observations: int
+    robust_loss_type: str | None
+    robust_loss_scale_px: float | None
+    corner_outlier_threshold_px: float | None
+    marker_outlier_threshold_px: float | None
+    error_message: str | None = None
+
+
+@dataclass(frozen=True)
+class OptimizedMarkerPose:
+    marker_id: int
+    ba_run_id: int
+    T_W_M: dict[str, Any]
+    is_anchor: bool = False
+
+
+@dataclass(frozen=True)
+class OptimizedCameraPose:
+    image_id: int
+    ba_run_id: int
+    T_W_C: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ReprojectionErrorRecord:
+    ba_run_id: int
+    image_id: int
+    marker_id: int
+    corner_index_detector_order: int
+    error_px: float
+    residual_x_px: float
+    residual_y_px: float
+    is_outlier: bool = False
+    id: int | None = None
+
+
+@dataclass(frozen=True)
+class BAResult:
+    ba_run_id: int
+    success: bool
+    summary: BARunSummary
+    optimized_marker_poses: list[OptimizedMarkerPose]
+    optimized_camera_poses: list[OptimizedCameraPose]
+    reprojection_errors: list[ReprojectionErrorRecord]
