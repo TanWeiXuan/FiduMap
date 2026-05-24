@@ -97,9 +97,12 @@ def summarize_observation_graph(graph: ObservationGraph, anchor_marker_id: int =
 
 
 def build_graph_from_store(store: ProjectStore) -> ObservationGraph:
-    graph = build_observation_graph(store.list_pnp_observations(success_only=True), store.get_anchor_marker_id())
+    anchor_marker_id = store.get_anchor_marker_id()
+    graph = build_observation_graph(store.list_pnp_observations(success_only=True), anchor_marker_id)
     if graph.summary is not None:
-        store.set_graph_diagnostics(observation_graph_summary_to_dict(graph.summary))
+        diagnostics = observation_graph_summary_to_dict(graph.summary)
+        diagnostics["anchor_marker_id"] = anchor_marker_id
+        store.set_graph_diagnostics(diagnostics)
     return graph
 
 

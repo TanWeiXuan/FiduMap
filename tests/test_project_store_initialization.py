@@ -55,3 +55,56 @@ def test_initialization_settings_and_results_persist(tmp_path: Path) -> None:
         assert reopened.get_graph_diagnostics()["anchor_marker_exists"] is True
     finally:
         reopened.close()
+
+
+def test_default_anchor_uses_smallest_observed_marker_id(tmp_path: Path) -> None:
+    store = ProjectStore.open(tmp_path)
+    try:
+        store.upsert_image_index_entry("image.png", 10, 100)
+        image = store.list_images()[0]
+        run_id = store.create_detector_run(DetectorRunConfig(detector_type="ArUco", dictionary_name="DICT_4X4_50"))
+        store.replace_image_detections(
+            image.id,
+            run_id,
+            [
+                MarkerDetection(
+                    marker_family="aruco",
+                    dictionary_name="DICT_4X4_50",
+                    marker_id=9,
+                    corners=[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+                    corner_refinement_method="CORNER_REFINE_SUBPIX",
+                ),
+                MarkerDetection(
+                    marker_family="aruco",
+                    dictionary_name="DICT_4X4_50",
+                    marker_id=3,
+                    corners=[[2.0, 2.0], [3.0, 2.0], [3.0, 3.0], [2.0, 3.0]],
+                    corner_refinement_method="CORNER_REFINE_SUBPIX",
+                ),
+            ],
+        )
+        detection_rows = store.list_detection_rows_for_initialization()
+        detection_by_marker = {row["marker_id"]: row["detection_id"] for row in detection_rows}
+        T = SE3.identity().to_json_dict()
+        store.replace_pnp_observations(
+            [
+                PnPObservation(
+                    image_id=image.id,
+                    detection_id=detection_by_marker[9],
+                    marker_id=9,
+                    success=True,
+                    T_C_M=T,
+                ),
+                PnPObservation(
+                    image_id=image.id,
+                    detection_id=detection_by_marker[3],
+                    marker_id=3,
+                    success=True,
+                    T_C_M=T,
+                ),
+            ]
+        )
+        assert store.get_configured_anchor_marker_id() is None
+        assert store.get_anchor_marker_id() == 3
+    finally:
+        store.close()

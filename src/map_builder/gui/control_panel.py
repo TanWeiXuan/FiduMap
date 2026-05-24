@@ -30,7 +30,7 @@ class ControlPanel(ScrollableFrame):
         self.detector_type_var = tk.StringVar(value="ArUco")
         self.dictionary_var = tk.StringVar(value=ARUCO_DICTIONARY_CHOICES[0])
         self.marker_size_var = tk.StringVar(value="")
-        self.anchor_marker_var = tk.StringVar(value="0")
+        self.anchor_marker_var = tk.StringVar(value="")
         self.pnp_status_var = tk.StringVar(value="PnP not run")
         self.graph_status_var = tk.StringVar(value="Graph not built")
 
@@ -91,7 +91,9 @@ class ControlPanel(ScrollableFrame):
         marker_grid.columnconfigure(1, weight=1)
         ttk.Label(marker_grid, text="Marker side length (m)").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=2)
         ttk.Entry(marker_grid, textvariable=self.marker_size_var, width=12).grid(row=0, column=1, sticky="ew", pady=2)
-        ttk.Label(marker_grid, text="Anchor marker ID").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Label(marker_grid, text="Anchor marker ID (blank = smallest detected)").grid(
+            row=1, column=0, sticky="w", padx=(0, 6), pady=2
+        )
         ttk.Entry(marker_grid, textvariable=self.anchor_marker_var, width=12).grid(row=1, column=1, sticky="ew", pady=2)
         pnp_actions = ttk.Frame(frame)
         pnp_actions.grid(row=17, column=0, sticky="ew", padx=8, pady=3)
@@ -138,12 +140,13 @@ class ControlPanel(ScrollableFrame):
     def marker_size_m(self) -> float:
         return float(self.marker_size_var.get())
 
-    def anchor_marker_id(self) -> int:
-        return int(self.anchor_marker_var.get())
+    def anchor_marker_id(self) -> int | None:
+        text = self.anchor_marker_var.get().strip()
+        return None if text == "" else int(text)
 
-    def set_initialization_settings(self, marker_size_m: float | None, anchor_marker_id: int) -> None:
+    def set_initialization_settings(self, marker_size_m: float | None, anchor_marker_id: int | None) -> None:
         self.marker_size_var.set("" if marker_size_m is None else f"{marker_size_m:g}")
-        self.anchor_marker_var.set(str(anchor_marker_id))
+        self.anchor_marker_var.set("" if anchor_marker_id is None else str(anchor_marker_id))
 
     def set_pnp_status(self, text: str) -> None:
         self.pnp_status_var.set(text)

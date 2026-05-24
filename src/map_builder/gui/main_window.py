@@ -99,7 +99,10 @@ class MainWindow(ttk.Frame):
             self.project_folder = folder.expanduser().resolve()
             self.store = ProjectStore.open(self.project_folder)
             self.camera_config_path = self.store.get_camera_config_path()
-            self.controls.set_initialization_settings(self.store.get_marker_size_m(), self.store.get_anchor_marker_id())
+            self.controls.set_initialization_settings(
+                self.store.get_marker_size_m(),
+                self.store.get_configured_anchor_marker_id(),
+            )
             self.controls.set_graph_status(format_graph_diagnostics(self.store.get_graph_diagnostics()))
             self.map_3d_viewer.set_project(self.project_folder, self.store)
             self.refresh_index()
@@ -241,7 +244,12 @@ class MainWindow(ttk.Frame):
             self.store.set_marker_size_m(marker_size)
             self.store.set_anchor_marker_id(anchor)
             self.controls.set_initialization_settings(marker_size, anchor)
-            self.controls.set_pnp_status("Marker geometry settings saved")
+            if anchor is None:
+                self.controls.set_pnp_status(
+                    f"Marker geometry settings saved; auto anchor will use marker {self.store.get_anchor_marker_id()}"
+                )
+            else:
+                self.controls.set_pnp_status("Marker geometry settings saved")
             self.map_3d_viewer.refresh()
             return True
         except Exception as exc:

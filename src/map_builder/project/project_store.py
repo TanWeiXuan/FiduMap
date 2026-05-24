@@ -171,12 +171,45 @@ class ProjectStore:
         value = self.get_metadata("marker_size_m")
         return None if value is None else float(value)
 
-    def set_anchor_marker_id(self, marker_id: int) -> None:
+    def set_anchor_marker_id(self, marker_id: int | None) -> None:
+        if marker_id is None:
+            self.delete_metadata("anchor_marker_id")
+            return
         self.set_metadata("anchor_marker_id", str(int(marker_id)))
 
     def get_anchor_marker_id(self) -> int:
+        configured = self.get_configured_anchor_marker_id()
+        if configured is not None:
+            return configured
+        return self.get_default_anchor_marker_id()
+
+    def get_configured_anchor_marker_id(self) -> int | None:
         value = self.get_metadata("anchor_marker_id")
-        return 0 if value is None else int(value)
+        return None if value is None else int(value)
+
+    def get_default_anchor_marker_id(self) -> int:
+        row = self._conn.execute(
+            """
+            SELECT MIN(marker_id) AS marker_id
+            FROM pnp_observations
+            WHERE success = 1
+            """
+        ).fetchone()
+        if row is not None and row["marker_id"] is not None:
+            return int(row["marker_id"])
+
+        row = self._conn.execute(
+            """
+            SELECT MIN(detections.marker_id) AS marker_id
+            FROM detections
+            JOIN images ON images.id = detections.image_id
+            WHERE images.ignored = 0
+              AND images.missing = 0
+            """
+        ).fetchone()
+        if row is not None and row["marker_id"] is not None:
+            return int(row["marker_id"])
+        return 0
 
     def set_metadata(self, key: str, value: str) -> None:
         with self._conn:
@@ -188,6 +221,10 @@ class ProjectStore:
                 """,
                 (key, value),
             )
+
+    def delete_metadata(self, key: str) -> None:
+        with self._conn:
+            self._conn.execute("DELETE FROM project_metadata WHERE key = ?", (key,))
 
     def get_metadata(self, key: str) -> str | None:
         row = self._conn.execute("SELECT value FROM project_metadata WHERE key = ?", (key,)).fetchone()

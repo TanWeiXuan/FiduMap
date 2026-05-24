@@ -14,6 +14,7 @@ def format_graph_diagnostics(values: dict[str, Any]) -> str:
         f"Camera-marker edges: {values.get('num_camera_marker_edges', 0)}",
         f"Marker-overlap edges: {values.get('num_marker_overlap_edges', 0)}",
         f"Components: {values.get('connected_components', 0)}",
+        f"Anchor marker: {values.get('anchor_marker_id', 'auto')}",
         f"Anchor exists: {values.get('anchor_marker_exists', False)}",
         f"Markers connected to anchor: {values.get('markers_connected_to_anchor', 0)}",
         f"Disconnected markers: {values.get('disconnected_markers', [])}",
