@@ -28,24 +28,28 @@ def compute_marker_observation_residual(
     T_C_W = T_W_C.inverse()
     object_points = np.asarray(object_points_marker, dtype=np.float64).reshape(4, 3)
     observed = np.asarray(observed_corners_px, dtype=np.float64).reshape(4, 2)
-    residuals = np.empty(8, dtype=np.float64)
     eps = 1e-12
 
-    for i, (X_M, observed_px) in enumerate(zip(object_points, observed)):
-        X_W = T_W_M.transform_points(X_M)
-        X_C = T_C_W.transform_points(X_W)
-        norm = float(np.linalg.norm(X_C))
-        if norm <= eps or X_C[2] <= eps:
-            residuals[2 * i : 2 * i + 2] = invalid_projection_penalty_px
-            continue
-        ray = X_C / norm
-        predicted_px = camera_model.project(ray)
-        if not np.all(np.isfinite(predicted_px)):
-            residuals[2 * i : 2 * i + 2] = invalid_projection_penalty_px
-            continue
-        residuals[2 * i : 2 * i + 2] = observed_px - predicted_px
+    points_w = T_W_M.transform_points(object_points)
+    points_c = T_C_W.transform_points(points_w)
+    norms = np.linalg.norm(points_c, axis=1)
+    valid_mask = (points_c[:, 2] > eps) & (norms > eps)
 
-    return residuals
+    predicted = np.full((4, 2), invalid_projection_penalty_px, dtype=np.float64)
+    if np.any(valid_mask):
+        rays = points_c[valid_mask] / norms[valid_mask, None]
+        projected = np.asarray(camera_model.project_many(rays), dtype=np.float64).reshape(-1, 2)
+        finite_mask = np.all(np.isfinite(projected), axis=1)
+        if np.any(finite_mask):
+            valid_indices = np.flatnonzero(valid_mask)
+            predicted[valid_indices[finite_mask]] = projected[finite_mask]
+
+    residuals = np.full((4, 2), invalid_projection_penalty_px, dtype=np.float64)
+    finite_pred_mask = np.all(np.isfinite(predicted), axis=1)
+    if np.any(finite_pred_mask):
+        residuals[finite_pred_mask] = observed[finite_pred_mask] - predicted[finite_pred_mask]
+
+    return residuals.reshape(8)
 
 
 def finite_difference_jacobian(
