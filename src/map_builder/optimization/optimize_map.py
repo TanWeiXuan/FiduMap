@@ -60,21 +60,25 @@ class MapOptimizer:
             )
 
             final = first
-            if config.run_outlier_second_pass and outliers:
+            second_pass_ran = bool(config.run_outlier_second_pass and outliers)
+            if second_pass_ran:
                 self._notify(progress_callback, f"Running second pyceres BA pass without {len(outliers)} outlier observation(s)")
                 second_problem = problem.with_initial_poses(camera_poses, marker_poses)
                 final = solve_marker_ba(second_problem, config, excluded_observations=outliers)
                 camera_poses, marker_poses = final.camera_poses, final.marker_poses
 
-            records = compute_reprojection_error_records(
-                ba_run_id,
-                self.camera_model,
-                problem.marker_size_m,
-                problem.observations,
-                camera_poses,
-                marker_poses,
-                outlier_observation_keys=outliers,
-            )
+            if second_pass_ran:
+                records = compute_reprojection_error_records(
+                    ba_run_id,
+                    self.camera_model,
+                    problem.marker_size_m,
+                    problem.observations,
+                    camera_poses,
+                    marker_poses,
+                    outlier_observation_keys=outliers,
+                )
+            else:
+                records = all_records
             stats = residual_statistics([record for record in records if not record.is_outlier])
             optimized_cameras = [
                 OptimizedCameraPose(image_id=image_id, ba_run_id=ba_run_id, T_W_C=pose.to_json_dict())
