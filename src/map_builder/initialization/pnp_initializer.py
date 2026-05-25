@@ -9,7 +9,7 @@ from typing import Any
 import numpy as np
 
 from map_builder.camera_models import CameraModel
-from map_builder.geometry import SE3, marker_object_points_for_detector, validate_marker_size
+from map_builder.geometry import SE3, marker_corners_for_detector_order, validate_marker_size
 from map_builder.project import PnPObservation, ProjectStore
 
 
@@ -37,7 +37,7 @@ class PnPInitializer:
         detections = self.store.list_detection_rows_for_initialization()
         total = len(detections)
         observations: list[PnPObservation] = []
-        object_points = marker_object_points_for_detector(self.marker_size_m, self.detector_corner_order)
+        object_points = marker_corners_for_detector_order(self.marker_size_m, self.detector_corner_order)
         for index, row in enumerate(detections, start=1):
             self._notify(index, total, f"image {row['image_id']} marker {row['marker_id']}")
             observations.append(self._solve_one(row, object_points))

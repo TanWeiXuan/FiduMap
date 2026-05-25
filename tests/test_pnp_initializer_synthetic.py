@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from map_builder.camera_models import PinholeRadTanCameraModel
-from map_builder.geometry import SE3, marker_object_points_for_detector
+from map_builder.geometry import SE3, marker_corners_for_detector_order
 from map_builder.initialization import PnPInitializer
 from map_builder.project import DetectorRunConfig, MarkerDetection, ProjectStore
 
@@ -25,7 +25,7 @@ def test_pnp_initializer_recovers_synthetic_marker_pose(tmp_path: Path) -> None:
         k3=0.0,
     )
     marker_size = 0.2
-    object_points = marker_object_points_for_detector(marker_size)
+    object_points = marker_corners_for_detector_order(marker_size)
     T_C_M_gt = SE3(np.eye(3), np.array([0.02, -0.01, 1.5]))
     image_points = camera.project_many(T_C_M_gt.transform_points(object_points))
 

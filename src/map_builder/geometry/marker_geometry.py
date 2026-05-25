@@ -58,14 +58,6 @@ def marker_corners_for_detector_order(
     raise ValueError(f"Unsupported detector corner order: {detector_corner_order}")
 
 
-def marker_object_points_for_detector(
-    marker_size_m: float,
-    detector_corner_order: str = "opencv_tl_tr_br_bl",
-) -> np.ndarray:
-    """Backward-compatible alias for detector-order marker corners."""
-
-    return marker_corners_for_detector_order(marker_size_m, detector_corner_order)
-
 
 def marker_corners_for_export_order(marker_size_m: float) -> np.ndarray:
     """Return marker corners in CSV export order.

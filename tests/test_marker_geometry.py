@@ -1,6 +1,6 @@
 import numpy as np
 
-from map_builder.geometry import marker_corners_y_up, marker_object_points_for_detector
+from map_builder.geometry import marker_corners_y_up, marker_corners_for_detector_order
 
 
 def test_marker_corners_y_up() -> None:
@@ -10,7 +10,7 @@ def test_marker_corners_y_up() -> None:
 
 
 def test_marker_object_points_match_opencv_corner_order() -> None:
-    points = marker_object_points_for_detector(2.0, "opencv_tl_tr_br_bl")
+    points = marker_corners_for_detector_order(2.0, "opencv_tl_tr_br_bl")
     np.testing.assert_allclose(
         points,
         [
