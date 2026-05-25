@@ -13,6 +13,12 @@ from .marker_detector import marker_family_for_dictionary
 from .opencv_aruco_detector import OpenCVArucoMarkerDetector
 
 
+try:
+    import cv2 as _CV2  # type: ignore[import-not-found]
+except ImportError:
+    _CV2 = None
+
+
 ProgressCallback = Callable[[int, int, ImageRecord, str], None]
 
 
@@ -30,7 +36,7 @@ class DetectionRunner:
         self.progress_callback = progress_callback
 
     def run(self) -> int:
-        cv2 = _load_cv2()
+        _load_cv2()
         family = self.detector_config.marker_family or marker_family_for_dictionary(
             self.detector_config.dictionary_name,
             self.detector_config.detector_type,
@@ -40,14 +46,14 @@ class DetectionRunner:
             marker_family=family,
             corner_refinement=str(self.detector_config.detector_params.get("corner_refinement", "auto")),
         )
-        run_id = self.store.create_detector_run(self.detector_config, opencv_version=getattr(cv2, "__version__", None))
+        run_id = self.store.create_detector_run(self.detector_config, opencv_version=getattr(_CV2, "__version__", None))
 
         images = self.store.list_detectable_images()
         total = len(images)
         for index, image in enumerate(images, start=1):
             self._notify(index, total, image, "loading")
             path = image.absolute_path(self.project_folder)
-            data = cv2.imread(str(path), cv2.IMREAD_COLOR)
+            data = _CV2.imread(str(path), _CV2.IMREAD_COLOR)
             if data is None:
                 self._notify(index, total, image, "failed_to_read")
                 continue
@@ -63,8 +69,6 @@ class DetectionRunner:
 
 
 def _load_cv2() -> Any:
-    try:
-        import cv2  # type: ignore[import-not-found]
-    except ImportError as exc:
-        raise RuntimeError("OpenCV is required for marker detection. Install opencv-contrib-python.") from exc
-    return cv2
+    if _CV2 is None:
+        raise RuntimeError("OpenCV is required for marker detection. Install opencv-contrib-python.")
+    return _CV2
