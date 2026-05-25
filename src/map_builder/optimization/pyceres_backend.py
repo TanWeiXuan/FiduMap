@@ -167,12 +167,7 @@ def set_linear_solver_type(pyceres: Any, options: object, linear_solver_type: st
     if not hasattr(options, "linear_solver_type"):
         return
     normalized = linear_solver_type.strip().upper()
-    candidates = [
-        normalized,
-        normalized.replace("SPARSE_SCHUR", "SPARSE_SCHUR"),
-        normalized.replace("DENSE_SCHUR", "DENSE_SCHUR"),
-        normalized.replace("SPARSE_NORMAL_CHOLESKY", "SPARSE_NORMAL_CHOLESKY"),
-    ]
+    candidates = [normalized]
     for candidate in candidates:
         if hasattr(pyceres, candidate):
             setattr(options, "linear_solver_type", getattr(pyceres, candidate))
