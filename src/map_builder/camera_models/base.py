@@ -74,17 +74,14 @@ class CameraModel(ABC):
 def normalize_vectors(vectors: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     """Normalize one vector of shape (3,) or array of vectors shape (N, 3)."""
     v = np.asarray(vectors, dtype=float)
-    if v.ndim == 1:
-        norm = np.linalg.norm(v)
-        if norm <= eps:
-            raise ValueError("Cannot normalize near-zero vector.")
-        return v / norm
-    if v.ndim == 2 and v.shape[1] == 3:
-        norms = np.linalg.norm(v, axis=1)
-        if np.any(norms <= eps):
-            raise ValueError("Cannot normalize near-zero vector(s).")
-        return v / norms[:, None]
-    raise ValueError(f"Expected shape (3,) or (N,3), got {v.shape}.")
+    if not ((v.ndim == 1 and v.shape[0] == 3) or (v.ndim == 2 and v.shape[1] == 3)):
+        raise ValueError(f"Expected shape (3,) or (N,3), got {v.shape}.")
+
+    norms = np.linalg.norm(v, axis=-1, keepdims=True)
+    if np.any(norms <= eps):
+        raise ValueError("Cannot normalize near-zero vector(s).")
+
+    return v / norms
 
 
 def distort_radtan(
