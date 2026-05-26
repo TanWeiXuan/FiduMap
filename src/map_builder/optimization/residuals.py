@@ -14,6 +14,7 @@ import numpy as np
 
 from map_builder.camera_models import CameraModel
 from map_builder.geometry import SE3, marker_corners_for_detector_order
+from map_builder.optimization.residual_math import _compute_residuals
 from map_builder.project import ReprojectionErrorRecord
 
 
@@ -34,27 +35,14 @@ def evaluate_marker_observation_residuals(
     behind_camera_penalty_px: float = 1.0e6,
 ) -> np.ndarray:
     object_points = marker_corners_for_detector_order(marker_size_m, detector_corner_order)
-    T_C_W = T_W_C.inverse()
-    points_c = T_C_W.transform_points(T_W_M.transform_points(object_points))
-    observed = np.asarray(observation.corners_px, dtype=float).reshape(4, 2)
-    eps = 1e-12
-    norms = np.linalg.norm(points_c, axis=1)
-    valid_mask = (points_c[:, 2] > eps) & (norms > eps)
-
-    predicted = np.full((4, 2), behind_camera_penalty_px, dtype=float)
-    if np.any(valid_mask):
-        rays = points_c[valid_mask] / norms[valid_mask, None]
-        projected = np.asarray(camera_model.project_many(rays), dtype=float).reshape(-1, 2)
-        finite_mask = np.all(np.isfinite(projected), axis=1)
-        if np.any(finite_mask):
-            valid_indices = np.flatnonzero(valid_mask)
-            predicted[valid_indices[finite_mask]] = projected[finite_mask]
-
-    residuals = np.full((4, 2), behind_camera_penalty_px, dtype=float)
-    finite_pred_mask = np.all(np.isfinite(predicted), axis=1)
-    if np.any(finite_pred_mask):
-        residuals[finite_pred_mask] = observed[finite_pred_mask] - predicted[finite_pred_mask]
-    return residuals.reshape(8)
+    return _compute_residuals(
+        camera_model,
+        object_points,
+        observation.corners_px,
+        T_W_C,
+        T_W_M,
+        invalid_projection_penalty_px=behind_camera_penalty_px,
+    )
 
 
 def compute_reprojection_error_records(

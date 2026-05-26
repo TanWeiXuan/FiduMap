@@ -15,16 +15,14 @@ import numpy as np
 from map_builder.geometry import SE3
 
 
-def compute_marker_observation_residual(
+def _compute_residuals(
     camera_model: Any,
-    camera_xi: np.ndarray,
-    marker_xi: np.ndarray,
     object_points_marker: np.ndarray,
     observed_corners_px: np.ndarray,
+    T_W_C: SE3,
+    T_W_M: SE3,
     invalid_projection_penalty_px: float = 1e6,
 ) -> np.ndarray:
-    T_W_C = SE3.exp(np.asarray(camera_xi, dtype=np.float64))
-    T_W_M = SE3.exp(np.asarray(marker_xi, dtype=np.float64))
     T_C_W = T_W_C.inverse()
     object_points = np.asarray(object_points_marker, dtype=np.float64).reshape(4, 3)
     observed = np.asarray(observed_corners_px, dtype=np.float64).reshape(4, 2)
@@ -50,6 +48,26 @@ def compute_marker_observation_residual(
         residuals[finite_pred_mask] = observed[finite_pred_mask] - predicted[finite_pred_mask]
 
     return residuals.reshape(8)
+
+
+def compute_marker_observation_residual(
+    camera_model: Any,
+    camera_xi: np.ndarray,
+    marker_xi: np.ndarray,
+    object_points_marker: np.ndarray,
+    observed_corners_px: np.ndarray,
+    invalid_projection_penalty_px: float = 1e6,
+) -> np.ndarray:
+    T_W_C = SE3.exp(np.asarray(camera_xi, dtype=np.float64))
+    T_W_M = SE3.exp(np.asarray(marker_xi, dtype=np.float64))
+    return _compute_residuals(
+        camera_model,
+        object_points_marker,
+        observed_corners_px,
+        T_W_C,
+        T_W_M,
+        invalid_projection_penalty_px=invalid_projection_penalty_px,
+    )
 
 
 def finite_difference_jacobian(
