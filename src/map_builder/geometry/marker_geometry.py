@@ -50,12 +50,15 @@ def marker_corners_for_detector_order(
     - bottom-left: ``[-s/2, -s/2, 0]``
     """
 
+    orders = {
+        "opencv_tl_tr_br_bl": [3, 2, 1, 0],
+        "y_up_bl_br_tr_tl": [0, 1, 2, 3],
+    }
+    if detector_corner_order not in orders:
+        raise ValueError(f"Unsupported detector corner order: {detector_corner_order}")
+
     corners = marker_corners_y_up(marker_size_m)
-    if detector_corner_order == "opencv_tl_tr_br_bl":
-        return corners[[3, 2, 1, 0], :]
-    if detector_corner_order == "y_up_bl_br_tr_tl":
-        return corners
-    raise ValueError(f"Unsupported detector corner order: {detector_corner_order}")
+    return corners[orders[detector_corner_order], :]
 
 
 
