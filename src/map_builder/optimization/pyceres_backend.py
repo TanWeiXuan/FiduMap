@@ -166,18 +166,28 @@ def make_solver_options(pyceres: Any, config: BAConfig) -> object:
 def set_linear_solver_type(pyceres: Any, options: object, linear_solver_type: str) -> None:
     if not hasattr(options, "linear_solver_type"):
         return
-    normalized = linear_solver_type.strip().upper()
-    candidates = [normalized]
-    for candidate in candidates:
-        if hasattr(pyceres, candidate):
-            setattr(options, "linear_solver_type", getattr(pyceres, candidate))
-            return
+
     enum = getattr(pyceres, "LinearSolverType", None)
-    if enum is not None:
-        for candidate in candidates:
-            if hasattr(enum, candidate):
-                setattr(options, "linear_solver_type", getattr(enum, candidate))
-                return
+    solver_map = {
+        "SPARSE_NORMAL_CHOLESKY": getattr(pyceres, "SPARSE_NORMAL_CHOLESKY", None)
+        or (getattr(enum, "SPARSE_NORMAL_CHOLESKY", None) if enum is not None else None),
+        "DENSE_QR": getattr(pyceres, "DENSE_QR", None)
+        or (getattr(enum, "DENSE_QR", None) if enum is not None else None),
+        "DENSE_NORMAL_CHOLESKY": getattr(pyceres, "DENSE_NORMAL_CHOLESKY", None)
+        or (getattr(enum, "DENSE_NORMAL_CHOLESKY", None) if enum is not None else None),
+        "SPARSE_SCHUR": getattr(pyceres, "SPARSE_SCHUR", None)
+        or (getattr(enum, "SPARSE_SCHUR", None) if enum is not None else None),
+        "DENSE_SCHUR": getattr(pyceres, "DENSE_SCHUR", None)
+        or (getattr(enum, "DENSE_SCHUR", None) if enum is not None else None),
+        "ITERATIVE_SCHUR": getattr(pyceres, "ITERATIVE_SCHUR", None)
+        or (getattr(enum, "ITERATIVE_SCHUR", None) if enum is not None else None),
+    }
+
+    solver_value = solver_map.get(linear_solver_type.strip().upper())
+    if solver_value is not None:
+        setattr(options, "linear_solver_type", solver_value)
+        return
+
     warnings.warn(f"pyceres linear solver type '{linear_solver_type}' is unavailable; using default.", RuntimeWarning)
 
 
