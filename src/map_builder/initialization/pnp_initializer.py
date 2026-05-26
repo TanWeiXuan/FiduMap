@@ -24,6 +24,7 @@ class PnPInitializer:
         camera_model: CameraModel,
         marker_size_m: float,
         detector_corner_order: str = "opencv_tl_tr_br_bl",
+        object_points: np.ndarray | None = None,
         progress_callback: ProgressCallback | None = None,
     ):
         self.project_folder = Path(project_folder)
@@ -31,24 +32,29 @@ class PnPInitializer:
         self.camera_model = camera_model
         self.marker_size_m = validate_marker_size(marker_size_m)
         self.detector_corner_order = detector_corner_order
+        self.object_points = (
+            np.asarray(object_points, dtype=float).reshape(4, 3)
+            if object_points is not None
+            else marker_corners_for_detector_order(self.marker_size_m, self.detector_corner_order)
+        )
         self.progress_callback = progress_callback
 
     def run(self) -> list[PnPObservation]:
         detections = self.store.list_detection_rows_for_initialization()
         total = len(detections)
         observations: list[PnPObservation] = []
-        object_points = marker_corners_for_detector_order(self.marker_size_m, self.detector_corner_order)
         for index, row in enumerate(detections, start=1):
             self._notify(index, total, f"image {row['image_id']} marker {row['marker_id']}")
-            observations.append(self._solve_one(row, object_points))
+            observations.append(self._solve_one(row))
         self.store.replace_pnp_observations(observations)
         return observations
 
-    def _solve_one(self, row: dict[str, Any], object_points: np.ndarray) -> PnPObservation:
+    def _solve_one(self, row: dict[str, Any]) -> PnPObservation:
         try:
-            normalized_points = self._corners_to_normalized_points(np.asarray(row["corners"], dtype=float))
-            T_C_M, rvec, tvec = solve_marker_pnp(object_points, normalized_points)
-            error = reprojection_error_px(self.camera_model, object_points, np.asarray(row["corners"], dtype=float), T_C_M)
+            corners_px = np.asarray(row["corners"], dtype=float)
+            normalized_points = self._corners_to_normalized_points(corners_px)
+            T_C_M, rvec, tvec = solve_marker_pnp(self.object_points, normalized_points)
+            error = reprojection_error_px(self.camera_model, self.object_points, corners_px, T_C_M)
             return PnPObservation(
                 image_id=int(row["image_id"]),
                 detection_id=int(row["detection_id"]),
