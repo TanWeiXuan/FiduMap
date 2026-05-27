@@ -57,11 +57,13 @@ class DensePipeline:
         extractor = XFeatSemiDenseExtractor(cfg)
         successes = 0
         failures = 0
+        total_keypoints = 0
         for index, image in enumerate(images, start=1):
             _emit(progress, f"Extracting features: {index}/{len(images)} images")
             existing = self.store.get_feature(image.id)
             if existing is not None and existing.status == "success" and not cfg.force_recompute:
                 successes += 1
+                total_keypoints += int(existing.num_keypoints)
                 continue
             try:
                 arr = cv2.imread(str(image.absolute_path(self.folder)), cv2.IMREAD_COLOR)
@@ -73,6 +75,7 @@ class DensePipeline:
                 record.height = image.height or record.height
                 self.store.upsert_feature_record(record)
                 successes += 1
+                total_keypoints += int(record.num_keypoints)
             except Exception:
                 self.store.upsert_feature(image.id, image.rel_path, status="failed", width=image.width, height=image.height)
                 failures += 1
@@ -81,7 +84,10 @@ class DensePipeline:
             total=len(images),
             success=successes,
             failed=failures,
-            details=f"Extracted features for {successes}/{len(images)} image(s)",
+            details=(
+                f"Extracted dense features for {successes}/{len(images)} image(s); "
+                f"{total_keypoints:,} keypoints total"
+            ),
         )
 
     def build_frame_pairs(

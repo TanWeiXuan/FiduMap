@@ -73,3 +73,33 @@ def test_store_roundtrips_dense_entities(tmp_path):
     s2 = DenseReconstructionStore.open(tmp_path)
     assert np.allclose(s2.get_feature(1).keypoints, keypoints)
     assert len(s2.list_active_dense_points()) == 1
+
+
+def test_dense_counts_separate_feature_images_from_keypoints(tmp_path):
+    store = DenseReconstructionStore.open(tmp_path)
+    store.upsert_feature(
+        1,
+        "a.jpg",
+        np.zeros((100, 2), dtype=np.float32),
+        np.zeros((100, 64), dtype=np.float32),
+        status="success",
+    )
+    store.upsert_feature(
+        2,
+        "b.jpg",
+        np.zeros((250, 2), dtype=np.float32),
+        np.zeros((250, 64), dtype=np.float32),
+        status="success",
+    )
+    store.upsert_feature(
+        3,
+        "c.jpg",
+        np.zeros((500, 2), dtype=np.float32),
+        np.zeros((500, 64), dtype=np.float32),
+        status="failed",
+    )
+
+    counts = store.dense_counts()
+    assert counts["feature_images"] == 2
+    assert counts["keypoints"] == 350
+    assert counts["features"] == 2

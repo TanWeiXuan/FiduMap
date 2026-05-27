@@ -565,8 +565,14 @@ class DenseReconstructionStore:
         def count(sql: str, args: tuple[Any, ...] = ()) -> int:
             return int(self.conn.execute(sql, args).fetchone()["c"])
 
+        feature_images = count("SELECT COUNT(*) c FROM dense_images WHERE features_status='success'")
+        keypoints = count(
+            "SELECT COALESCE(SUM(num_keypoints), 0) c FROM dense_images WHERE features_status='success'"
+        )
         return {
-            "features": count("SELECT COUNT(*) c FROM dense_images WHERE features_status='success'"),
+            "feature_images": feature_images,
+            "keypoints": keypoints,
+            "features": feature_images,
             "pairs": count("SELECT COUNT(*) c FROM frame_pairs"),
             "matches": count("SELECT COUNT(*) c FROM pair_matches"),
             "inliers": count("SELECT COUNT(*) c FROM pair_matches WHERE is_epipolar_inlier=1"),

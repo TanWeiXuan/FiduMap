@@ -147,9 +147,12 @@ class DenseControlPanel(ScrollableFrame):
         if not counts:
             self.counts_var.set("")
             return
+        feature_images = int(counts.get("feature_images", counts.get("features", 0)))
+        keypoints = int(counts.get("keypoints", 0))
         self.counts_var.set(
-            "Features: {features}  Pairs: {pairs}  Matches: {matches}\n"
-            "Inliers: {inliers}  Tracks: {tracks}  Points: {points}".format(**counts)
+            f"Feature images: {feature_images}  Keypoints: {keypoints:,}\n"
+            f"Pairs: {counts.get('pairs', 0)}  Matches: {counts.get('matches', 0)}\n"
+            f"Inliers: {counts.get('inliers', 0)}  Tracks: {counts.get('tracks', 0)}  Points: {counts.get('points', 0)}"
         )
 
     def set_running(self, running: bool) -> None:
