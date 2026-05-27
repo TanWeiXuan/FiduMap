@@ -20,7 +20,8 @@ USE_LEGACY_PATTERN = False
 
 MIN_CHARUCO_CORNERS = 8
 MIN_VALID_IMAGES = 5
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
+HEIF_EXTENSIONS = {".heic", ".heif"}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", *HEIF_EXTENSIONS}
 
 OUTPUT_YAML_NAME = "camera_calibration_charuco.yml"
 OUTPUT_XML_NAME = "camera_params.xml"
@@ -166,6 +167,29 @@ def _find_image_files(folder: Path) -> list[Path]:
     )
 
 
+def _read_image(image_path: Path) -> np.ndarray | None:
+    cv2 = load_cv2_aruco()
+    if image_path.suffix.lower() not in HEIF_EXTENSIONS:
+        return cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+
+    try:
+        from PIL import Image
+        import pillow_heif
+    except ImportError as exc:
+        raise RuntimeError(
+            "Reading HEIC/HEIF calibration images requires Pillow and pillow-heif. "
+            "Install pillow pillow-heif, or convert the images to JPG or PNG."
+        ) from exc
+
+    pillow_heif.register_heif_opener()
+    try:
+        with Image.open(image_path) as pil_image:
+            rgb_image = np.asarray(pil_image.convert("RGB"))
+    except OSError:
+        return None
+    return cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR)
+
+
 def _refine_corners_subpixel(gray: np.ndarray, corners: list[np.ndarray]) -> None:
     cv2 = load_cv2_aruco()
     criteria = (
@@ -185,7 +209,7 @@ def _detect_charuco(
     charuco_detector: Any | None,
 ) -> tuple[DetectionResult | None, tuple[int, int] | None]:
     cv2 = load_cv2_aruco()
-    image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+    image = _read_image(image_path)
     if image is None:
         print(f"[WARN] Could not read image: {image_path}")
         return None, None
