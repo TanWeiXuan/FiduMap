@@ -3,3 +3,4 @@ misc/*
 .pytest_cache/
 __pycache__/
 .map_builder/
+src/map_builder/example_data/**/marker_map_points.csv

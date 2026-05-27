@@ -182,7 +182,7 @@ The camera model then projects `X_Ck` into the image.
 src/map_builder/
 ├── camera_models/     # Camera models and XML I/O
 ├── detection/         # Marker detection abstractions and OpenCV implementation
-├── example_data/      # Sample images, camera calibration and marker map
+├── example_data/      # Sample dataset folders for tests and manual runs
 ├── export/            # CSV exporter for optimised maps
 ├── geometry/          # SE3 and marker-corner geometry helpers
 ├── gui/               # Tkinter GUI
@@ -240,14 +240,17 @@ Important files:
 
 ## `example_data`
 
-This folder contains a small sample dataset used for tests and manual experimentation.
+This folder contains sample dataset folders used for tests and manual experimentation.
+
+The current dataset is:
+
+- `marker_mapper_dataset/`
 
 It includes:
 
 - sample marker images,
 - `camera_params.xml`,
 - `marker_info.txt`,
-- `marker_map_points.csv`,
 - attribution metadata.
 
 ## `export`
