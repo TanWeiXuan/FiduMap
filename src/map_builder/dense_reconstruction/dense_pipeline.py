@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+import statistics
 from typing import Any
 
 from map_builder.camera_models import load_camera_model_xml
@@ -27,7 +28,7 @@ from map_builder.dense_reconstruction.point_ba import run_dense_point_ba
 from map_builder.dense_reconstruction.point_cloud_export import export_dense_point_cloud_csv
 from map_builder.dense_reconstruction.track_builder import build_tracks_from_matches
 from map_builder.dense_reconstruction.xfeat_extractor import XFeatSemiDenseExtractor
-from map_builder.dense_reconstruction.xfeat_matching import XFeatLighterGlueMatcher
+from map_builder.dense_reconstruction.xfeat_matching import IncompatibleDenseFeatureError, XFeatSemiDenseMatcher
 from map_builder.project import ProjectStore
 
 ProgressCallback = Callable[[str], None]
@@ -61,7 +62,12 @@ class DensePipeline:
         for index, image in enumerate(images, start=1):
             _emit(progress, f"Extracting features: {index}/{len(images)} images")
             existing = self.store.get_feature(image.id)
-            if existing is not None and existing.status == "success" and not cfg.force_recompute:
+            if (
+                existing is not None
+                and existing.status == "success"
+                and _is_current_semidense_feature(existing)
+                and not cfg.force_recompute
+            ):
                 successes += 1
                 total_keypoints += int(existing.num_keypoints)
                 continue
@@ -122,39 +128,60 @@ class DensePipeline:
         availability = check_xfeat_matching_availability()
         if not availability.available:
             return DenseStageSummary(stage="pair_matching", details=availability.details)
-        pairs = self.store.list_frame_pairs()
-        pairs = [p for p in pairs if cfg.force_recompute or p.num_raw_matches == 0]
+        candidate_pairs = self.store.list_frame_pairs()
+        pairs = [p for p in candidate_pairs if cfg.force_recompute or p.num_raw_matches == 0]
         if cfg.max_pairs_to_match is not None:
             pairs = pairs[: int(cfg.max_pairs_to_match)]
-        matcher = XFeatLighterGlueMatcher(cfg) if pairs else None
+        matcher = XFeatSemiDenseMatcher(cfg) if pairs else None
         matched = 0
+        skipped = 0
         failed = 0
         raw_matches = 0
+        per_pair_counts: list[int] = []
+        failure_reasons: list[str] = []
         for index, pair in enumerate(pairs, start=1):
             _emit(progress, f"Matching pairs: {index}/{len(pairs)} pairs")
             assert pair.id is not None
             fa = self.store.get_feature(pair.image_id_a)
             fb = self.store.get_feature(pair.image_id_b)
             if fa is None or fb is None or fa.status != "success" or fb.status != "success":
-                failed += 1
-                continue
-            if fa.descriptors is None or fb.descriptors is None:
-                failed += 1
+                skipped += 1
+                reason = "Missing successful semi-dense feature records. Re-run feature extraction."
+                failure_reasons.append(reason)
+                self.store.update_frame_pair_matching_status(pair.id, "missing_features", clear_matches=cfg.force_recompute)
                 continue
             try:
                 assert matcher is not None
                 matches = matcher.match(fa, fb, pair.id)
                 self.store.replace_pair_matches(pair.id, matches)
-                raw_matches += len(matches)
+                match_count = len(matches)
+                raw_matches += match_count
+                per_pair_counts.append(match_count)
                 matched += 1
-            except Exception:
+            except IncompatibleDenseFeatureError as exc:
+                skipped += 1
+                failure_reasons.append(str(exc))
+                self.store.update_frame_pair_matching_status(pair.id, "incompatible_features", clear_matches=cfg.force_recompute)
+            except Exception as exc:
                 failed += 1
+                failure_reasons.append(str(exc) or exc.__class__.__name__)
+                self.store.update_frame_pair_matching_status(pair.id, "match_failed", clear_matches=cfg.force_recompute)
+        details = _matching_details(
+            total_candidate_pairs=len(candidate_pairs),
+            processed_pairs=len(pairs),
+            matched_pairs=matched,
+            skipped_pairs=skipped,
+            failed_pairs=failed,
+            raw_matches=raw_matches,
+            per_pair_counts=per_pair_counts,
+            failure_reasons=failure_reasons,
+        )
         return DenseStageSummary(
             stage="pair_matching",
-            total=len(pairs),
+            total=len(candidate_pairs),
             success=matched,
             failed=failed,
-            details=f"Matched {matched} pair(s), {raw_matches} raw match(es)",
+            details=details,
         )
 
     def filter_matches(
@@ -272,3 +299,40 @@ class DensePipeline:
 def _emit(progress: ProgressCallback | None, message: str) -> None:
     if progress is not None:
         progress(message)
+
+
+def _is_current_semidense_feature(feature: Any) -> bool:
+    return (
+        getattr(feature, "extraction_mode", None) == "semi_dense_xfeat"
+        and getattr(feature, "descriptor_source", None) == "detectAndComputeDense"
+    )
+
+
+def _matching_details(
+    total_candidate_pairs: int,
+    processed_pairs: int,
+    matched_pairs: int,
+    skipped_pairs: int,
+    failed_pairs: int,
+    raw_matches: int,
+    per_pair_counts: list[int],
+    failure_reasons: list[str],
+) -> str:
+    if per_pair_counts:
+        min_count = min(per_pair_counts)
+        median_count = int(statistics.median(per_pair_counts))
+        max_count = max(per_pair_counts)
+        per_pair = f"; per-pair matches min/median/max = {min_count:,}/{median_count:,}/{max_count:,}"
+    else:
+        per_pair = "; per-pair matches min/median/max = 0/0/0"
+    parts = [
+        f"Matched {matched_pairs} pair(s), {raw_matches:,} raw matches{per_pair}",
+        f"processed {processed_pairs}/{total_candidate_pairs} candidate pair(s)",
+        f"skipped {skipped_pairs} incompatible/missing pair(s)",
+        f"failed {failed_pairs} pair(s)",
+    ]
+    if failure_reasons:
+        unique_reasons = list(dict.fromkeys(reason for reason in failure_reasons if reason))[:3]
+        if unique_reasons:
+            parts.append("reasons: " + " | ".join(unique_reasons))
+    return "; ".join(parts)

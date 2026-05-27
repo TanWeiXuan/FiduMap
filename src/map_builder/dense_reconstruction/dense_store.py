@@ -93,6 +93,8 @@ class DenseReconstructionStore:
                     score_blob BLOB,
                     feature_dtype TEXT,
                     descriptor_dtype TEXT,
+                    extraction_mode TEXT,
+                    descriptor_source TEXT,
                     updated_at TEXT
                 );
                 CREATE TABLE IF NOT EXISTS frame_pairs(
@@ -186,7 +188,14 @@ class DenseReconstructionStore:
                 CREATE INDEX IF NOT EXISTS idx_dense_points_active ON dense_points(is_active);
                 """
             )
+            self._ensure_column("dense_images", "extraction_mode", "TEXT")
+            self._ensure_column("dense_images", "descriptor_source", "TEXT")
             self.set_metadata("blob_format_version", BLOB_FORMAT_VERSION)
+
+    def _ensure_column(self, table: str, column: str, definition: str) -> None:
+        rows = self.conn.execute(f"PRAGMA table_info({table})").fetchall()
+        if column not in {str(row["name"]) for row in rows}:
+            self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def set_metadata(self, key: str, value: str) -> None:
         self.conn.execute(
@@ -208,6 +217,8 @@ class DenseReconstructionStore:
         status: str = "success",
         width: int | None = None,
         height: int | None = None,
+        extraction_mode: str | None = "semi_dense_xfeat",
+        descriptor_source: str | None = "detectAndComputeDense",
     ) -> None:
         kpts = None if keypoints is None else np.asarray(keypoints)
         desc = None if descriptors is None else np.asarray(descriptors)
@@ -217,9 +228,10 @@ class DenseReconstructionStore:
                 """
                 INSERT INTO dense_images(
                     image_id,rel_path,width,height,features_status,num_keypoints,
-                    feature_blob,descriptor_blob,score_blob,feature_dtype,descriptor_dtype,updated_at
+                    feature_blob,descriptor_blob,score_blob,feature_dtype,descriptor_dtype,
+                    extraction_mode,descriptor_source,updated_at
                 )
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(image_id) DO UPDATE SET
                     rel_path=excluded.rel_path,
                     width=excluded.width,
@@ -231,6 +243,8 @@ class DenseReconstructionStore:
                     score_blob=excluded.score_blob,
                     feature_dtype=excluded.feature_dtype,
                     descriptor_dtype=excluded.descriptor_dtype,
+                    extraction_mode=excluded.extraction_mode,
+                    descriptor_source=excluded.descriptor_source,
                     updated_at=excluded.updated_at
                 """,
                 (
@@ -245,6 +259,8 @@ class DenseReconstructionStore:
                     None if scr is None else numpy_array_to_blob(scr),
                     None if kpts is None else str(kpts.dtype),
                     None if desc is None else str(desc.dtype),
+                    extraction_mode,
+                    descriptor_source,
                     _ts(),
                 ),
             )
@@ -259,6 +275,8 @@ class DenseReconstructionStore:
             rec.status,
             rec.width,
             rec.height,
+            rec.extraction_mode,
+            rec.descriptor_source,
         )
 
     def get_feature(self, image_id: int) -> DenseFeatureRecord | None:
@@ -357,6 +375,22 @@ class DenseReconstructionStore:
                 (len(matches), "matched", pair_id),
             )
         return matches
+
+    def update_frame_pair_matching_status(
+        self,
+        pair_id: int,
+        status: str,
+        num_raw_matches: int = 0,
+        num_epipolar_inliers: int = 0,
+        clear_matches: bool = False,
+    ) -> None:
+        with self.conn:
+            if clear_matches:
+                self.conn.execute("DELETE FROM pair_matches WHERE pair_id=?", (int(pair_id),))
+            self.conn.execute(
+                "UPDATE frame_pairs SET status=?, num_raw_matches=?, num_epipolar_inliers=? WHERE id=?",
+                (status, int(num_raw_matches), int(num_epipolar_inliers), int(pair_id)),
+            )
 
     def list_pair_matches(
         self, pair_id: int | None = None, epipolar_inliers_only: bool = False
@@ -574,6 +608,7 @@ class DenseReconstructionStore:
             "keypoints": keypoints,
             "features": feature_images,
             "pairs": count("SELECT COUNT(*) c FROM frame_pairs"),
+            "matched_pairs": count("SELECT COUNT(*) c FROM frame_pairs WHERE num_raw_matches > 0"),
             "matches": count("SELECT COUNT(*) c FROM pair_matches"),
             "inliers": count("SELECT COUNT(*) c FROM pair_matches WHERE is_epipolar_inlier=1"),
             "tracks": count("SELECT COUNT(*) c FROM tracks"),
@@ -595,6 +630,8 @@ def _feature_from_row(row: sqlite3.Row) -> DenseFeatureRecord:
         scores=scores,
         status=str(row["features_status"]),
         num_keypoints=int(row["num_keypoints"]),
+        extraction_mode="unknown" if row["extraction_mode"] is None else str(row["extraction_mode"]),
+        descriptor_source="unknown" if row["descriptor_source"] is None else str(row["descriptor_source"]),
     )
 
 

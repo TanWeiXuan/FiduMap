@@ -34,6 +34,7 @@ def test_dense_count_text_names_feature_images_and_keypoints():
                 "keypoints": 3500,
                 "features": 2,
                 "pairs": 3,
+                "matched_pairs": 2,
                 "matches": 4,
                 "inliers": 5,
                 "tracks": 6,
@@ -43,6 +44,10 @@ def test_dense_count_text_names_feature_images_and_keypoints():
         text = panel.counts_var.get()
         assert "Feature images: 2" in text
         assert "Keypoints: 3,500" in text
+        assert "Frame pairs: 3" in text
+        assert "Matched pairs: 2" in text
+        assert "Raw matches: 4" in text
         assert "Features:" not in text
+        assert "Matches:" not in text
     finally:
         root.destroy()

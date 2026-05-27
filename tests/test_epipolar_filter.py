@@ -20,6 +20,8 @@ def test_epipolar_zero_for_consistent_rays_and_rejects_outlier():
     T1 = {"R": np.eye(3).tolist(), "t": [0, 0, 0]}
     T2 = {"R": np.eye(3).tolist(), "t": [1, 0, 0]}
     R21, t21 = relative_pose_21(T1, T2)
+    assert np.allclose(R21, np.eye(3))
+    assert np.allclose(t21, [-1, 0, 0])
     points = [np.array([0.0, 0.0, 5.0]), np.array([0.2, 0.3, 4.0])]
     f1 = np.array([_unit(p) for p in points])
     f2 = np.array([_unit(p - np.array([1.0, 0.0, 0.0])) for p in points])

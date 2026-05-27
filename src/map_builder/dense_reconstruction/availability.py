@@ -4,7 +4,6 @@ from dataclasses import dataclass
 
 from .vendor_xfeat import (
     ensure_vendor_parent_on_path,
-    vendored_lighterglue_file_exists,
     vendored_xfeat_file_exists,
 )
 
@@ -65,23 +64,19 @@ def check_xfeat_matching_availability() -> AvailabilityResult:
     for dep in ["numpy", "torch"]:
         if not _try_import(dep):
             missing.append(dep)
-    if not _try_import("kornia"):
-        missing.append("kornia")
     if not vendored_xfeat_file_exists():
         missing.append("vendored XFeat")
-    if not vendored_lighterglue_file_exists():
-        missing.append("vendored XFeat-LighterGlue")
-    elif "kornia" not in missing and "torch" not in missing:
+    elif "torch" not in missing:
         ensure_vendor_parent_on_path()
-        if not _try_import_any(["vendor.xfeat.lighterglue", "lighterglue"]):
-            missing.append("vendored XFeat-LighterGlue")
+        if not _try_import_any(["vendor.xfeat.xfeat", "xfeat", "map_builder.vendor.xfeat.xfeat"]):
+            missing.append("vendored XFeat")
     ok = not missing
     return AvailabilityResult(
         ok,
         missing,
-        "XFeat-LighterGlue matching available."
+        "XFeat semi-dense matching available."
         if ok
-        else "XFeat-LighterGlue matching unavailable: missing " + " / ".join(missing),
+        else "XFeat semi-dense matching unavailable: missing " + " / ".join(missing),
     )
 
 

@@ -15,6 +15,8 @@ class DenseFeatureRecord:
     scores: Any | None = None
     status: str = "not_run"
     num_keypoints: int = 0
+    extraction_mode: str | None = "semi_dense_xfeat"
+    descriptor_source: str | None = "detectAndComputeDense"
 
 
 @dataclass

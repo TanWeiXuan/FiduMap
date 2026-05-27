@@ -29,6 +29,8 @@ class XFeatSemiDenseExtractor:
         keypoints = _to_numpy(out["keypoints"])
         descriptors = _to_numpy(out["descriptors"])
         scores = _to_numpy(out.get("scores", out.get("scales")))
+        if keypoints is None or descriptors is None:
+            raise RuntimeError("detectAndComputeDense returned missing keypoints or descriptors.")
         if keypoints.ndim == 3:
             keypoints = keypoints[0]
         if descriptors.ndim == 3:
@@ -37,6 +39,9 @@ class XFeatSemiDenseExtractor:
             scores = scores[0]
         if scale != 1.0:
             keypoints = keypoints / scale
+            if scores is not None and "scales" in out:
+                scores = scores / scale
+        _validate_dense_features(keypoints, descriptors, scores)
         return DenseFeatureRecord(
             image_id=int(image_id),
             keypoints=keypoints.astype(np.float32, copy=False),
@@ -46,6 +51,8 @@ class XFeatSemiDenseExtractor:
             num_keypoints=int(len(keypoints)),
             height=int(image_bgr_or_gray.shape[0]),
             width=int(image_bgr_or_gray.shape[1]),
+            extraction_mode="semi_dense_xfeat",
+            descriptor_source="detectAndComputeDense",
         )
 
 
@@ -90,6 +97,27 @@ def _to_numpy(value: Any) -> np.ndarray | None:
     if hasattr(value, "detach"):
         return value.detach().cpu().numpy()
     return np.asarray(value)
+
+
+def _validate_dense_features(keypoints: np.ndarray | None, descriptors: np.ndarray | None, scores: np.ndarray | None) -> None:
+    if keypoints is None or descriptors is None:
+        raise RuntimeError("detectAndComputeDense returned missing keypoints or descriptors.")
+    if keypoints.ndim != 2 or keypoints.shape[1] != 2:
+        raise RuntimeError(f"detectAndComputeDense returned invalid keypoint shape {keypoints.shape}; expected Nx2.")
+    if descriptors.ndim != 2:
+        raise RuntimeError(f"detectAndComputeDense returned invalid descriptor shape {descriptors.shape}; expected NxD.")
+    if len(keypoints) == 0:
+        raise RuntimeError("detectAndComputeDense returned no semi-dense keypoints.")
+    if len(keypoints) != len(descriptors):
+        raise RuntimeError(
+            "detectAndComputeDense returned misaligned semi-dense features: "
+            f"{len(keypoints)} keypoints and {len(descriptors)} descriptors."
+        )
+    if scores is not None and (scores.ndim != 1 or len(scores) != len(keypoints)):
+        raise RuntimeError(
+            "detectAndComputeDense returned misaligned score/scale values: "
+            f"shape {scores.shape} for {len(keypoints)} keypoints."
+        )
 
 
 def _to_xfeat_tensor(torch: Any, image: np.ndarray, device: Any) -> Any:

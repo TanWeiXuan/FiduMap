@@ -149,9 +149,13 @@ class DenseControlPanel(ScrollableFrame):
             return
         feature_images = int(counts.get("feature_images", counts.get("features", 0)))
         keypoints = int(counts.get("keypoints", 0))
+        frame_pairs = int(counts.get("pairs", 0))
+        matched_pairs = int(counts.get("matched_pairs", 0))
+        raw_matches = int(counts.get("matches", 0))
         self.counts_var.set(
             f"Feature images: {feature_images}  Keypoints: {keypoints:,}\n"
-            f"Pairs: {counts.get('pairs', 0)}  Matches: {counts.get('matches', 0)}\n"
+            f"Frame pairs: {frame_pairs}  Matched pairs: {matched_pairs}\n"
+            f"Raw matches: {raw_matches:,}\n"
             f"Inliers: {counts.get('inliers', 0)}  Tracks: {counts.get('tracks', 0)}  Points: {counts.get('points', 0)}"
         )
 
