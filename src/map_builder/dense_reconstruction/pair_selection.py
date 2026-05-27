@@ -59,7 +59,6 @@ def select_frame_pairs(
 
     keep: set[tuple[int, int]] = set()
     for image_id, ranked in per_image.items():
-        del image_id
         ranked.sort(key=lambda x: x[0], reverse=True)
         for _, rec in ranked[: config.max_pairs_per_image]:
             keep.add((rec.image_id_a, rec.image_id_b))
