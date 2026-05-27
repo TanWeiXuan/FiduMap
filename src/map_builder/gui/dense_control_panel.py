@@ -8,6 +8,8 @@ from typing import Callable
 from map_builder.dense_reconstruction.availability import (
     check_dense_ba_availability,
     check_dense_reconstruction_availability,
+    check_xfeat_extraction_availability,
+    check_xfeat_matching_availability,
 )
 from map_builder.dense_reconstruction.models import (
     DenseBAConfig,
@@ -37,6 +39,8 @@ class DenseControlPanel(ttk.LabelFrame):
         super().__init__(master, text="Dense Reconstruction (Optional)", **kwargs)
         self.project_folder: Path | None = None
         self.available = False
+        self.extraction_available = False
+        self.matching_available = False
         self.ba_available = False
         self.running = False
         self.status_var = tk.StringVar(value="Choose an image folder first")
@@ -52,7 +56,7 @@ class DenseControlPanel(ttk.LabelFrame):
         self.duplicate_radius_var = tk.StringVar(value="0.02")
         self.ba_mode_var = tk.StringVar(value="points_only")
         self.buttons: list[ttk.Button] = []
-        self.stage_buttons: list[ttk.Button] = []
+        self.button_by_stage: dict[str, ttk.Button] = {}
         self.ba_button: ttk.Button | None = None
 
         self.columnconfigure(0, weight=1)
@@ -91,22 +95,21 @@ class DenseControlPanel(ttk.LabelFrame):
         actions.grid(row=3, column=0, sticky="ew", padx=6, pady=4)
         actions.columnconfigure(0, weight=1)
         specs = [
-            ("Run XFeat Feature Extraction", run_extract_features),
-            ("Build Frame Pair Overlap Graph", run_build_pairs),
-            ("Run Pair Matching", run_match_pairs),
-            ("Run Epipolar Filtering", run_filter_matches),
-            ("Build Tracks + Triangulate", run_build_tracks),
-            ("Merge Duplicates", run_merge_duplicates),
-            ("Run Dense Point BA", run_dense_ba),
-            ("Export Dense Point Cloud CSV", export_dense_csv),
+            ("extract", "Run XFeat Feature Extraction", run_extract_features),
+            ("pairs", "Build Frame Pair Overlap Graph", run_build_pairs),
+            ("match", "Run Pair Matching", run_match_pairs),
+            ("filter", "Run Epipolar Filtering", run_filter_matches),
+            ("tracks", "Build Tracks + Triangulate", run_build_tracks),
+            ("merge", "Merge Duplicates", run_merge_duplicates),
+            ("ba", "Run Dense Point BA", run_dense_ba),
+            ("export", "Export Dense Point Cloud CSV", export_dense_csv),
         ]
-        for row, (text, command) in enumerate(specs):
+        for row, (stage, text, command) in enumerate(specs):
             btn = ttk.Button(actions, text=text, command=command)
             btn.grid(row=row, column=0, sticky="ew", pady=2)
             self.buttons.append(btn)
-            if "Export" not in text:
-                self.stage_buttons.append(btn)
-            if text == "Run Dense Point BA":
+            self.button_by_stage[stage] = btn
+            if stage == "ba":
                 self.ba_button = btn
         self.refresh_availability()
 
@@ -116,10 +119,18 @@ class DenseControlPanel(ttk.LabelFrame):
 
     def refresh_availability(self) -> None:
         res = check_dense_reconstruction_availability()
+        extraction_res = check_xfeat_extraction_availability()
+        matching_res = check_xfeat_matching_availability()
         ba_res = check_dense_ba_availability()
         self.available = res.available
+        self.extraction_available = extraction_res.available
+        self.matching_available = matching_res.available
         self.ba_available = ba_res.available
         details = res.details
+        if not extraction_res.available:
+            details = f"{details}\n{extraction_res.details}"
+        if not matching_res.available:
+            details = f"{details}\n{matching_res.details}"
         if not ba_res.available:
             details = f"{details}\n{ba_res.details}"
         self.status_var.set(details if self.project_folder is not None else "Choose an image folder first")
@@ -175,11 +186,17 @@ class DenseControlPanel(ttk.LabelFrame):
         export_state = "normal" if has_project and not self.running else "disabled"
         for btn in self.buttons:
             btn.configure(state="disabled")
-        for btn in self.stage_buttons:
-            btn.configure(state="normal" if has_project and self.available and not self.running else "disabled")
+        base_state = "normal" if has_project and not self.running else "disabled"
+        for stage in ["pairs", "filter", "tracks", "merge"]:
+            self.button_by_stage[stage].configure(state=base_state)
+        self.button_by_stage["extract"].configure(
+            state="normal" if has_project and self.extraction_available and not self.running else "disabled"
+        )
+        self.button_by_stage["match"].configure(
+            state="normal" if has_project and self.matching_available and not self.running else "disabled"
+        )
         if self.ba_button is not None:
             self.ba_button.configure(
                 state="normal" if has_project and self.ba_available and not self.running else "disabled"
             )
-        if self.buttons:
-            self.buttons[-1].configure(state=export_state)
+        self.button_by_stage["export"].configure(state=export_state)

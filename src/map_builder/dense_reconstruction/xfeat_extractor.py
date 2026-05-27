@@ -23,8 +23,9 @@ class XFeatSemiDenseExtractor:
 
     def extract(self, image_bgr_or_gray: np.ndarray) -> DenseFeatureRecord:
         image, scale = _prepare_image(image_bgr_or_gray, self.config.resize_max_side)
+        tensor = _to_xfeat_tensor(self.torch, image, self.model.dev)
         with self.torch.no_grad():
-            out = self.model.detectAndComputeDense(image, top_k=int(self.config.max_keypoints), multiscale=True)
+            out = self.model.detectAndComputeDense(tensor, top_k=int(self.config.max_keypoints), multiscale=True)
         keypoints = _to_numpy(out["keypoints"])
         descriptors = _to_numpy(out["descriptors"])
         scores = _to_numpy(out.get("scores", out.get("scales")))
@@ -89,3 +90,14 @@ def _to_numpy(value: Any) -> np.ndarray | None:
     if hasattr(value, "detach"):
         return value.detach().cpu().numpy()
     return np.asarray(value)
+
+
+def _to_xfeat_tensor(torch: Any, image: np.ndarray, device: Any) -> Any:
+    arr = np.asarray(image)
+    if arr.ndim == 2:
+        tensor = torch.as_tensor(arr[None, None, ...], device=device)
+    elif arr.ndim == 3:
+        tensor = torch.as_tensor(arr, device=device).permute(2, 0, 1)[None]
+    else:
+        raise ValueError(f"Expected grayscale or color image, got shape {arr.shape}.")
+    return tensor.float() / 255.0

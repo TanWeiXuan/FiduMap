@@ -34,6 +34,15 @@ def _try_import(name: str) -> bool:
 
 def check_dense_reconstruction_availability() -> AvailabilityResult:
     missing = []
+    missing.extend(check_xfeat_extraction_availability().missing_dependencies)
+    missing.extend(dep for dep in check_xfeat_matching_availability().missing_dependencies if dep not in missing)
+    ok = not missing
+    details = "Dense reconstruction available." if ok else "Dense reconstruction unavailable: missing " + " / ".join(missing)
+    return AvailabilityResult(ok, missing, details)
+
+
+def check_xfeat_extraction_availability() -> AvailabilityResult:
+    missing = []
     for dep in ["numpy", "cv2", "torch"]:
         if not _try_import(dep):
             missing.append(dep)
@@ -43,8 +52,23 @@ def check_dense_reconstruction_availability() -> AvailabilityResult:
         ensure_vendor_parent_on_path()
         if not _try_import_any(["vendor.xfeat.xfeat", "xfeat", "map_builder.vendor.xfeat.xfeat"]):
             missing.append("vendored XFeat")
+    ok = not missing
+    return AvailabilityResult(
+        ok,
+        missing,
+        "XFeat extraction available." if ok else "XFeat extraction unavailable: missing " + " / ".join(missing),
+    )
+
+
+def check_xfeat_matching_availability() -> AvailabilityResult:
+    missing = []
+    for dep in ["numpy", "torch"]:
+        if not _try_import(dep):
+            missing.append(dep)
     if not _try_import("kornia"):
         missing.append("kornia")
+    if not vendored_xfeat_file_exists():
+        missing.append("vendored XFeat")
     if not vendored_lighterglue_file_exists():
         missing.append("vendored XFeat-LighterGlue")
     elif "kornia" not in missing and "torch" not in missing:
@@ -52,8 +76,13 @@ def check_dense_reconstruction_availability() -> AvailabilityResult:
         if not _try_import_any(["vendor.xfeat.lighterglue", "lighterglue"]):
             missing.append("vendored XFeat-LighterGlue")
     ok = not missing
-    details = "Dense reconstruction available." if ok else "Dense reconstruction unavailable: missing " + " / ".join(missing)
-    return AvailabilityResult(ok, missing, details)
+    return AvailabilityResult(
+        ok,
+        missing,
+        "XFeat-LighterGlue matching available."
+        if ok
+        else "XFeat-LighterGlue matching unavailable: missing " + " / ".join(missing),
+    )
 
 
 def check_dense_ba_availability() -> AvailabilityResult:

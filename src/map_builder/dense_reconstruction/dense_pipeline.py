@@ -5,7 +5,10 @@ from pathlib import Path
 from typing import Any
 
 from map_builder.camera_models import load_camera_model_xml
-from map_builder.dense_reconstruction.availability import check_dense_reconstruction_availability
+from map_builder.dense_reconstruction.availability import (
+    check_xfeat_extraction_availability,
+    check_xfeat_matching_availability,
+)
 from map_builder.dense_reconstruction.dense_store import DenseReconstructionStore
 from map_builder.dense_reconstruction.duplicate_merge import merge_duplicate_points, points_from_rows
 from map_builder.dense_reconstruction.epipolar_filter import filter_pair_matches
@@ -44,7 +47,7 @@ class DensePipeline:
         progress: ProgressCallback | None = None,
     ) -> DenseStageSummary:
         cfg = config or XFeatExtractionConfig()
-        availability = check_dense_reconstruction_availability()
+        availability = check_xfeat_extraction_availability()
         if not availability.available:
             return DenseStageSummary(stage="feature_extraction", details=availability.details)
         import cv2  # type: ignore[import-not-found]
@@ -111,7 +114,7 @@ class DensePipeline:
         progress: ProgressCallback | None = None,
     ) -> DenseStageSummary:
         cfg = config or MatchingConfig()
-        availability = check_dense_reconstruction_availability()
+        availability = check_xfeat_matching_availability()
         if not availability.available:
             return DenseStageSummary(stage="pair_matching", details=availability.details)
         pairs = self.store.list_frame_pairs()
