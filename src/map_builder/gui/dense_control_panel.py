@@ -21,8 +21,10 @@ from map_builder.dense_reconstruction.models import (
     XFeatExtractionConfig,
 )
 
+from .scrollable_frame import ScrollableFrame
 
-class DenseControlPanel(ttk.LabelFrame):
+
+class DenseControlPanel(ScrollableFrame):
     def __init__(
         self,
         master: tk.Misc,
@@ -36,7 +38,7 @@ class DenseControlPanel(ttk.LabelFrame):
         export_dense_csv: Callable[[], None],
         **kwargs: object,
     ):
-        super().__init__(master, text="Dense Reconstruction (Optional)", **kwargs)
+        super().__init__(master, **kwargs)
         self.project_folder: Path | None = None
         self.available = False
         self.extraction_available = False
@@ -59,15 +61,17 @@ class DenseControlPanel(ttk.LabelFrame):
         self.button_by_stage: dict[str, ttk.Button] = {}
         self.ba_button: ttk.Button | None = None
 
-        self.columnconfigure(0, weight=1)
-        ttk.Label(self, textvariable=self.status_var, wraplength=340, justify="left").grid(
-            row=0, column=0, sticky="ew", padx=6, pady=(6, 2)
+        frame = self.inner
+        frame.columnconfigure(0, weight=1)
+        ttk.Label(frame, text="Dense Reconstruction (Optional)").grid(row=0, column=0, sticky="w", padx=6, pady=(6, 2))
+        ttk.Label(frame, textvariable=self.status_var, wraplength=340, justify="left").grid(
+            row=1, column=0, sticky="ew", padx=6, pady=(2, 2)
         )
-        ttk.Label(self, textvariable=self.counts_var, wraplength=340, justify="left").grid(
-            row=1, column=0, sticky="ew", padx=6, pady=(0, 6)
+        ttk.Label(frame, textvariable=self.counts_var, wraplength=340, justify="left").grid(
+            row=2, column=0, sticky="ew", padx=6, pady=(0, 6)
         )
-        config = ttk.Frame(self)
-        config.grid(row=2, column=0, sticky="ew", padx=6, pady=4)
+        config = ttk.Frame(frame)
+        config.grid(row=3, column=0, sticky="ew", padx=6, pady=4)
         config.columnconfigure(1, weight=1)
         fields = [
             ("Max keypoints", self.max_keypoints_var),
@@ -91,8 +95,8 @@ class DenseControlPanel(ttk.LabelFrame):
             else:
                 ttk.Entry(config, textvariable=var, width=16).grid(row=row, column=1, sticky="ew", pady=1)
 
-        actions = ttk.Frame(self)
-        actions.grid(row=3, column=0, sticky="ew", padx=6, pady=4)
+        actions = ttk.Frame(frame)
+        actions.grid(row=4, column=0, sticky="ew", padx=6, pady=4)
         actions.columnconfigure(0, weight=1)
         specs = [
             ("extract", "Run XFeat Feature Extraction", run_extract_features),

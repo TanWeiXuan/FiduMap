@@ -64,8 +64,9 @@ class MainWindow(ttk.Frame):
             ignore_selected=self.ignore_selected,
             unignore_selected=self.unignore_selected,
         )
+        self.workflow_tabs = ttk.Notebook(self.left_pane)
         self.controls = ControlPanel(
-            self.left_pane,
+            self.workflow_tabs,
             refresh_images=self.refresh_index,
             ignore_selected=self.ignore_selected,
             unignore_selected=self.unignore_selected,
@@ -77,7 +78,7 @@ class MainWindow(ttk.Frame):
             export_optimized_csv=self.export_optimized_csv,
         )
         self.dense_controls = DenseControlPanel(
-            self.left_pane,
+            self.workflow_tabs,
             run_extract_features=self.run_dense_feature_extraction,
             run_build_pairs=self.run_dense_pair_selection,
             run_match_pairs=self.run_dense_matching,
@@ -87,9 +88,10 @@ class MainWindow(ttk.Frame):
             run_dense_ba=self.run_dense_ba,
             export_dense_csv=self.export_dense_csv,
         )
+        self.workflow_tabs.add(self.controls, text="Marker BA Pipeline")
+        self.workflow_tabs.add(self.dense_controls, text="Dense Reconstruction")
         self.left_pane.add(self.image_list, weight=3)
-        self.left_pane.add(self.controls, weight=1)
-        self.left_pane.add(self.dense_controls, weight=1)
+        self.left_pane.add(self.workflow_tabs, weight=2)
 
         self.right_tabs = RightPanelTabs(self)
         self.right_tabs.grid(row=0, column=1, sticky="nsew")
