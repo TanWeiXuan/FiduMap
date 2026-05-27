@@ -67,8 +67,7 @@ class DensePipeline:
                 arr = cv2.imread(str(image.absolute_path(self.folder)), cv2.IMREAD_COLOR)
                 if arr is None:
                     raise RuntimeError(f"Could not load image: {image.rel_path}")
-                record = extractor.extract(arr)
-                record.image_id = image.id
+                record = extractor.extract(arr, image.id)
                 record.rel_path = image.rel_path
                 record.width = image.width or record.width
                 record.height = image.height or record.height

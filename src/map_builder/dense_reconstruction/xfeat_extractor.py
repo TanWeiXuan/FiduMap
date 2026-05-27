@@ -21,7 +21,7 @@ class XFeatSemiDenseExtractor:
         self.model.dev = device
         self.model.net.to(device).eval()
 
-    def extract(self, image_bgr_or_gray: np.ndarray) -> DenseFeatureRecord:
+    def extract(self, image_bgr_or_gray: np.ndarray, image_id: int) -> DenseFeatureRecord:
         image, scale = _prepare_image(image_bgr_or_gray, self.config.resize_max_side)
         tensor = _to_xfeat_tensor(self.torch, image, self.model.dev)
         with self.torch.no_grad():
@@ -38,7 +38,7 @@ class XFeatSemiDenseExtractor:
         if scale != 1.0:
             keypoints = keypoints / scale
         return DenseFeatureRecord(
-            image_id=0,
+            image_id=int(image_id),
             keypoints=keypoints.astype(np.float32, copy=False),
             descriptors=descriptors.astype(np.float32, copy=False),
             scores=None if scores is None else scores.astype(np.float32, copy=False),

@@ -10,6 +10,7 @@ def test_xfeat_optional():
     from map_builder.dense_reconstruction.xfeat_extractor import XFeatSemiDenseExtractor
 
     extractor = XFeatSemiDenseExtractor(XFeatExtractionConfig(max_keypoints=16, resize_max_side=64, device="cpu"))
-    rec = extractor.extract(np.zeros((64, 64, 3), dtype=np.uint8))
+    rec = extractor.extract(np.zeros((64, 64, 3), dtype=np.uint8), image_id=123)
+    assert rec.image_id == 123
     assert rec.keypoints.shape[1] == 2
     assert rec.descriptors.shape[0] == rec.keypoints.shape[0]
