@@ -11,6 +11,7 @@ from tkinter import filedialog, messagebox, ttk
 from map_builder.camera_models import load_camera_model_xml
 from map_builder.dense_reconstruction import DensePipeline
 from map_builder.dense_reconstruction.dense_store import DenseReconstructionStore
+from map_builder.dense_reconstruction.point_cloud_export import DEFAULT_DENSE_POINT_CLOUD_FILENAME
 from map_builder.detection import DetectionRunner
 from map_builder.export import export_optimized_marker_map_csv
 from map_builder.initialization import PnPInitializer, build_graph_from_store, initialize_seed_poses_from_store
@@ -592,7 +593,7 @@ class MainWindow(ttk.Frame):
         output = filedialog.asksaveasfilename(
             title="Export dense point cloud CSV",
             defaultextension=".csv",
-            initialfile="dense_point_cloud.csv",
+            initialfile=DEFAULT_DENSE_POINT_CLOUD_FILENAME,
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
         )
         if not output:
