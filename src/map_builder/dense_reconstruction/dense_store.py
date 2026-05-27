@@ -324,38 +324,39 @@ class DenseReconstructionStore:
         row = self.conn.execute("SELECT * FROM frame_pairs WHERE id=?", (pair_id,)).fetchone()
         return None if row is None else _frame_pair_from_row(row)
 
-    def replace_pair_matches(self, pair_id: int, matches: list[PairMatchRecord]) -> None:
+    def replace_pair_matches(self, pair_id: int, matches: list[PairMatchRecord]) -> list[PairMatchRecord]:
         with self.conn:
             self.conn.execute("DELETE FROM pair_matches WHERE pair_id=?", (pair_id,))
-            self.conn.executemany(
-                """
-                INSERT INTO pair_matches(
-                    pair_id,feature_idx_a,feature_idx_b,x_a,y_a,x_b,y_b,match_score,
-                    epipolar_error,is_epipolar_inlier,is_used_for_track
-                )
-                VALUES(?,?,?,?,?,?,?,?,?,?,?)
-                """,
-                [
-                    (
-                        pair_id,
-                        m.feature_idx_a,
-                        m.feature_idx_b,
-                        m.x_a,
-                        m.y_a,
-                        m.x_b,
-                        m.y_b,
-                        m.match_score,
-                        m.epipolar_error,
-                        int(m.is_epipolar_inlier),
-                        int(m.is_used_for_track),
+            for match in matches:
+                match.pair_id = int(pair_id)
+                cur = self.conn.execute(
+                    """
+                    INSERT INTO pair_matches(
+                        pair_id,feature_idx_a,feature_idx_b,x_a,y_a,x_b,y_b,match_score,
+                        epipolar_error,is_epipolar_inlier,is_used_for_track
                     )
-                    for m in matches
-                ],
-            )
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        int(pair_id),
+                        match.feature_idx_a,
+                        match.feature_idx_b,
+                        match.x_a,
+                        match.y_a,
+                        match.x_b,
+                        match.y_b,
+                        match.match_score,
+                        match.epipolar_error,
+                        int(match.is_epipolar_inlier),
+                        int(match.is_used_for_track),
+                    ),
+                )
+                match.id = int(cur.lastrowid)
             self.conn.execute(
                 "UPDATE frame_pairs SET num_raw_matches=?, status=? WHERE id=?",
                 (len(matches), "matched", pair_id),
             )
+        return matches
 
     def list_pair_matches(
         self, pair_id: int | None = None, epipolar_inliers_only: bool = False
@@ -374,6 +375,10 @@ class DenseReconstructionStore:
     def update_pair_epipolar_results(
         self, pair_id: int, match_ids: list[int], errors: np.ndarray, inliers: np.ndarray, min_inliers: int = 8
     ) -> int:
+        if len(match_ids) != len(errors) or len(match_ids) != len(inliers):
+            raise ValueError("Epipolar update inputs must have matching lengths.")
+        if any(int(match_id) <= 0 for match_id in match_ids):
+            raise ValueError("Epipolar update requires persisted pair_match row IDs.")
         inlier_count = int(np.count_nonzero(inliers))
         status = "filtered" if inlier_count >= min_inliers else "few_inliers"
         with self.conn:

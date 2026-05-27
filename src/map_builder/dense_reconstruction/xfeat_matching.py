@@ -25,8 +25,10 @@ class XFeatLighterGlueMatcher:
         self,
         features_a: DenseFeatureRecord,
         features_b: DenseFeatureRecord,
-        pair_id: int = 0,
+        pair_id: int,
     ) -> list[PairMatchRecord]:
+        if int(pair_id) <= 0:
+            raise ValueError("pair_id must be the persisted frame_pairs.id for this match set.")
         if features_a.keypoints is None or features_b.keypoints is None:
             return []
         if features_a.descriptors is None or features_b.descriptors is None:
@@ -43,7 +45,7 @@ class XFeatLighterGlueMatcher:
             x_b, y_b = k1[ib, :2]
             matches.append(
                 PairMatchRecord(
-                    pair_id=pair_id,
+                    pair_id=int(pair_id),
                     feature_idx_a=int(ia),
                     feature_idx_b=int(ib),
                     x_a=float(x_a),

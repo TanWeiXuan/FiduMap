@@ -38,10 +38,12 @@ def test_store_roundtrips_dense_entities(tmp_path):
 
     pair_id = s.upsert_frame_pair(FramePairRecord(image_id_a=1, image_id_b=2, baseline_m=0.1))
     assert s.list_frame_pairs()[0].id == pair_id
-    s.replace_pair_matches(
+    inserted = s.replace_pair_matches(
         pair_id,
         [PairMatchRecord(pair_id, 0, 1, 10, 20, 11, 21, match_score=0.5)],
     )
+    assert inserted[0].id is not None
+    assert inserted[0].pair_id == pair_id
     matches = s.list_pair_matches(pair_id)
     assert len(matches) == 1
     s.update_pair_epipolar_results(pair_id, [matches[0].id], np.array([0.001]), np.array([True]), min_inliers=1)
