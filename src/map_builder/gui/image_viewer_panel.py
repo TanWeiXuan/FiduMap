@@ -17,15 +17,24 @@ class ImageViewerPanel(ttk.Frame):
 
     def __init__(self, master: tk.Misc, **kwargs: object):
         super().__init__(master, **kwargs)
+        controls = ttk.Frame(self)
+        controls.grid(row=0, column=0, sticky="ew", padx=6, pady=4)
+        controls.columnconfigure(2, weight=1)
+        self.show_markers_var = tk.BooleanVar(value=True)
+        self.show_xfeat_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(controls, text="Show markers", variable=self.show_markers_var, command=self._render).grid(
+            row=0, column=0, sticky="w", padx=(0, 8)
+        )
+        ttk.Checkbutton(controls, text="Show XFeat keypoints", variable=self.show_xfeat_var, command=self._render).grid(
+            row=0, column=1, sticky="w"
+        )
         self.canvas = tk.Canvas(self, bg="#f2f2f2", highlightthickness=0)
-        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.canvas.grid(row=1, column=0, sticky="nsew")
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
         self._photo: tk.PhotoImage | None = None
         self._current_path: Path | None = None
         self._current_detections: list[MarkerDetection] = []
-        self.show_markers_var = tk.BooleanVar(value=True)
-        self.show_xfeat_var = tk.BooleanVar(value=False)
         self._xfeat_keypoints = None
         self._source_bgr: Any | None = None
         self._fit_scale = 1.0
@@ -68,6 +77,10 @@ class ImageViewerPanel(ttk.Frame):
         self._source_bgr = source_bgr
         self._current_detections = detections or []
         self.reset_view()
+
+    def set_xfeat_keypoints(self, keypoints: Any | None) -> None:
+        self._xfeat_keypoints = keypoints
+        self._render()
 
     def reset_view(self) -> None:
         if self._source_bgr is None:

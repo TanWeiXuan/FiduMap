@@ -9,6 +9,8 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from map_builder.camera_models import load_camera_model_xml
+from map_builder.dense_reconstruction import DensePipeline
+from map_builder.dense_reconstruction.dense_store import DenseReconstructionStore
 from map_builder.detection import DetectionRunner
 from map_builder.export import export_optimized_marker_map_csv
 from map_builder.initialization import PnPInitializer, build_graph_from_store, initialize_seed_poses_from_store
@@ -18,6 +20,7 @@ from map_builder.optimization.diagnostics import format_ba_summary
 from map_builder.project import BAConfig, DetectorRunConfig, ImageIndexer, ProjectStore
 
 from .control_panel import ControlPanel
+from .dense_control_panel import DenseControlPanel
 from .image_list_panel import ImageListPanel
 from .menu_bar import create_menu_bar
 from .right_panel_tabs import RightPanelTabs
@@ -39,6 +42,8 @@ class MainWindow(ttk.Frame):
         self._graph_thread: threading.Thread | None = None
         self._ba_queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self._ba_thread: threading.Thread | None = None
+        self._dense_queue: queue.Queue[tuple[str, object]] = queue.Queue()
+        self._dense_thread: threading.Thread | None = None
 
         self.root.title("Fiducial Map Builder")
         self.root.geometry("1180x760")
@@ -71,8 +76,20 @@ class MainWindow(ttk.Frame):
             run_ba_refinement=self.run_ba_refinement,
             export_optimized_csv=self.export_optimized_csv,
         )
+        self.dense_controls = DenseControlPanel(
+            self.left_pane,
+            run_extract_features=self.run_dense_feature_extraction,
+            run_build_pairs=self.run_dense_pair_selection,
+            run_match_pairs=self.run_dense_matching,
+            run_filter_matches=self.run_dense_epipolar_filtering,
+            run_build_tracks=self.run_dense_track_triangulation,
+            run_merge_duplicates=self.run_dense_duplicate_merge,
+            run_dense_ba=self.run_dense_ba,
+            export_dense_csv=self.export_dense_csv,
+        )
         self.left_pane.add(self.image_list, weight=3)
         self.left_pane.add(self.controls, weight=1)
+        self.left_pane.add(self.dense_controls, weight=1)
 
         self.right_tabs = RightPanelTabs(self)
         self.right_tabs.grid(row=0, column=1, sticky="nsew")
@@ -121,6 +138,9 @@ class MainWindow(ttk.Frame):
                 ba_config.run_outlier_second_pass,
             )
             self.map_3d_viewer.set_project(self.project_folder, self.store)
+            self.dense_controls.set_project(self.project_folder)
+            self._refresh_dense_counts()
+            self._refresh_dense_prerequisite_status()
             self.refresh_index()
             self._load_default_or_existing_camera_config()
             self._update_path_display()
@@ -183,12 +203,15 @@ class MainWindow(ttk.Frame):
         record = self.image_list.first_selected_record()
         if record is None:
             self.viewer.show_placeholder("No image selected")
+            self.viewer.set_xfeat_keypoints(None)
             return
         if record.missing:
             self.viewer.show_placeholder(f"Missing image: {record.rel_path}")
+            self.viewer.set_xfeat_keypoints(None)
             return
         detections = self.store.get_detections_for_image(record.id)
         self.viewer.show_image(record.absolute_path(self.project_folder), detections)
+        self._load_selected_xfeat_keypoints(record.id)
         self.map_3d_viewer.set_selected_image_id(record.id)
 
     def run_detection(self) -> None:
@@ -453,6 +476,7 @@ class MainWindow(ttk.Frame):
             elif kind == "done":
                 self.controls.set_ba_running(False)
                 self.controls.set_ba_status(format_ba_summary(payload))  # type: ignore[arg-type]
+                self._refresh_dense_prerequisite_status()
                 self.map_3d_viewer.request_refresh()
             elif kind == "error":
                 self.controls.set_ba_running(False)
@@ -479,6 +503,144 @@ class MainWindow(ttk.Frame):
             messagebox.showinfo("CSV Export Complete", f"Exported {count} marker corner point(s).")
         except Exception as exc:
             messagebox.showerror("CSV Export Failed", str(exc))
+
+    def run_dense_feature_extraction(self) -> None:
+        self._start_dense_stage("extract_features", self.dense_controls.extraction_config())
+
+    def run_dense_pair_selection(self) -> None:
+        self._start_dense_stage("build_frame_pairs", self.dense_controls.pair_selection_config())
+
+    def run_dense_matching(self) -> None:
+        self._start_dense_stage("match_frame_pairs", self.dense_controls.matching_config())
+
+    def run_dense_epipolar_filtering(self) -> None:
+        self._start_dense_stage("filter_matches", self.dense_controls.epipolar_config())
+
+    def run_dense_track_triangulation(self) -> None:
+        self._start_dense_stage("build_tracks_and_triangulate", self.dense_controls.triangulation_config())
+
+    def run_dense_duplicate_merge(self) -> None:
+        self._start_dense_stage("merge_duplicates", self.dense_controls.duplicate_config())
+
+    def run_dense_ba(self) -> None:
+        self._start_dense_stage("run_dense_ba", self.dense_controls.dense_ba_config())
+
+    def _start_dense_stage(self, method_name: str, config: object) -> None:
+        if self.project_folder is None:
+            self.dense_controls.set_status("Choose an image folder first")
+            return
+        if self._dense_thread is not None and self._dense_thread.is_alive():
+            return
+        self.dense_controls.set_running(True)
+        self.dense_controls.set_status("Starting dense reconstruction stage")
+        self._dense_thread = threading.Thread(
+            target=self._run_dense_worker,
+            args=(method_name, config),
+            daemon=True,
+        )
+        self._dense_thread.start()
+        self.root.after(100, self._poll_dense_queue)
+
+    def _run_dense_worker(self, method_name: str, config: object) -> None:
+        assert self.project_folder is not None
+        pipeline: DensePipeline | None = None
+        try:
+            pipeline = DensePipeline(self.project_folder)
+
+            def progress(message: str) -> None:
+                self._dense_queue.put(("progress", message))
+
+            method = getattr(pipeline, method_name)
+            summary = method(config, progress)
+            self._dense_queue.put(("done", summary))
+        except Exception as exc:
+            self._dense_queue.put(("error", str(exc)))
+        finally:
+            if pipeline is not None:
+                pipeline.close()
+
+    def _poll_dense_queue(self) -> None:
+        keep_polling = self._dense_thread is not None and self._dense_thread.is_alive()
+        while True:
+            try:
+                kind, payload = self._dense_queue.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "progress":
+                self.dense_controls.set_status(str(payload))
+            elif kind == "done":
+                self.dense_controls.set_running(False)
+                details = getattr(payload, "details", str(payload))
+                self.dense_controls.set_status(details)
+                self._refresh_dense_counts()
+                self._refresh_selected_dense_overlays()
+                self.map_3d_viewer.request_refresh()
+            elif kind == "error":
+                self.dense_controls.set_running(False)
+                self.dense_controls.set_status("Dense reconstruction stage failed")
+                self._refresh_dense_counts()
+                messagebox.showerror("Dense Reconstruction Failed", str(payload))
+        if keep_polling:
+            self.root.after(100, self._poll_dense_queue)
+
+    def export_dense_csv(self) -> None:
+        if self.project_folder is None:
+            self.dense_controls.set_status("Choose an image folder first")
+            return
+        output = filedialog.asksaveasfilename(
+            title="Export dense point cloud CSV",
+            defaultextension=".csv",
+            initialfile="dense_point_cloud.csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        )
+        if not output:
+            return
+        pipeline: DensePipeline | None = None
+        try:
+            pipeline = DensePipeline(self.project_folder)
+            count = pipeline.export_dense_csv(Path(output))
+            self.dense_controls.set_status(f"Exported {count} dense point(s) to CSV")
+            messagebox.showinfo("Dense CSV Export Complete", f"Exported {count} dense point(s).")
+        except Exception as exc:
+            messagebox.showerror("Dense CSV Export Failed", str(exc))
+        finally:
+            if pipeline is not None:
+                pipeline.close()
+
+    def _refresh_dense_counts(self) -> None:
+        if self.project_folder is None:
+            self.dense_controls.set_counts(None)
+            return
+        try:
+            with DenseReconstructionStore.open(self.project_folder) as dense_store:
+                self.dense_controls.set_counts(dense_store.dense_counts())
+        except Exception:
+            self.dense_controls.set_counts(None)
+
+    def _refresh_dense_prerequisite_status(self) -> None:
+        if self.store is None or self.project_folder is None:
+            return
+        self.dense_controls.refresh_availability()
+        if not self.dense_controls.available:
+            return
+        if not self.store.get_optimized_camera_poses():
+            self.dense_controls.set_status("Run marker-map BA before dense reconstruction.")
+
+    def _refresh_selected_dense_overlays(self) -> None:
+        record = self.image_list.first_selected_record()
+        if record is not None:
+            self._load_selected_xfeat_keypoints(record.id)
+
+    def _load_selected_xfeat_keypoints(self, image_id: int) -> None:
+        if self.project_folder is None:
+            self.viewer.set_xfeat_keypoints(None)
+            return
+        try:
+            with DenseReconstructionStore.open(self.project_folder) as dense_store:
+                feature = dense_store.get_feature(image_id)
+            self.viewer.set_xfeat_keypoints(None if feature is None or feature.status != "success" else feature.keypoints)
+        except Exception:
+            self.viewer.set_xfeat_keypoints(None)
 
     def _load_default_or_existing_camera_config(self) -> None:
         if self.store is None or self.project_folder is None:

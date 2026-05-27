@@ -10,6 +10,7 @@ from typing import Any
 
 import numpy as np
 
+from map_builder.dense_reconstruction.dense_store import DenseReconstructionStore
 from map_builder.geometry import SE3, marker_corners_y_up
 from map_builder.project import ProjectStore
 
@@ -23,6 +24,7 @@ class Map3DViewerPanel(ttk.Frame):
         self.show_cameras_var = tk.BooleanVar(value=True)
         self.show_markers_var = tk.BooleanVar(value=True)
         self.show_labels_var = tk.BooleanVar(value=True)
+        self.show_dense_var = tk.BooleanVar(value=False)
         self.selected_only_var = tk.BooleanVar(value=False)
         self.pose_source_var = tk.StringVar(value="Optimized")
         self._matplotlib_ready = False
@@ -32,7 +34,7 @@ class Map3DViewerPanel(ttk.Frame):
 
         controls = ttk.Frame(self)
         controls.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
-        controls.columnconfigure(5, weight=1)
+        controls.columnconfigure(6, weight=1)
         ttk.Button(controls, text="Refresh 3D View", command=lambda: self.refresh(force=True)).grid(row=0, column=0, padx=(0, 8))
         ttk.Combobox(
             controls,
@@ -44,12 +46,13 @@ class Map3DViewerPanel(ttk.Frame):
         ttk.Checkbutton(controls, text="Cameras", variable=self.show_cameras_var, command=lambda: self.refresh(force=True)).grid(row=0, column=2)
         ttk.Checkbutton(controls, text="Markers", variable=self.show_markers_var, command=lambda: self.refresh(force=True)).grid(row=0, column=3)
         ttk.Checkbutton(controls, text="Labels", variable=self.show_labels_var, command=lambda: self.refresh(force=True)).grid(row=0, column=4)
+        ttk.Checkbutton(controls, text="Dense cloud", variable=self.show_dense_var, command=lambda: self.refresh(force=True)).grid(row=0, column=5)
         ttk.Checkbutton(
             controls,
             text="Selected image only",
             variable=self.selected_only_var,
             command=lambda: self.refresh(force=True),
-        ).grid(row=0, column=5, sticky="w")
+        ).grid(row=0, column=6, sticky="w")
         self.pose_source_var.trace_add("write", lambda *_args: self.refresh(force=True))
 
         self.plot_frame = ttk.Frame(self)
@@ -137,6 +140,7 @@ class Map3DViewerPanel(ttk.Frame):
             self._draw_seed_map(marker_size, seed_cameras, seed_markers)
         else:
             self._draw_selected_frame_local(marker_size, render_data["selected_pnp_observations"])
+        self._draw_dense_points(render_data["dense_points"])
         self._set_equal_axes()
         self.canvas.draw_idle()
 
@@ -148,6 +152,7 @@ class Map3DViewerPanel(ttk.Frame):
                 "seed_cameras": [],
                 "seed_markers": [],
                 "selected_pnp_observations": [],
+                "dense_points": np.empty((0, 3), dtype=float),
             }
         use_optimized = self.pose_source_var.get() == "Optimized"
         optimized_cameras = self.store.get_optimized_camera_poses() if use_optimized else []
@@ -161,13 +166,29 @@ class Map3DViewerPanel(ttk.Frame):
                 for obs in self.store.list_pnp_observations(success_only=True)
                 if obs.image_id == self.selected_image_id and obs.T_C_M is not None
             ]
+        dense_points = self._load_dense_points() if self.show_dense_var.get() else np.empty((0, 3), dtype=float)
         return {
             "store_missing": False,
             "marker_size": self.store.get_marker_size_m() or 0.1,
             "seed_cameras": seed_cameras,
             "seed_markers": seed_markers,
             "selected_pnp_observations": observations,
+            "dense_points": dense_points,
         }
+
+    def _load_dense_points(self, max_display_points: int = 100000) -> np.ndarray:
+        if self.project_folder is None:
+            return np.empty((0, 3), dtype=float)
+        try:
+            with DenseReconstructionStore.open(self.project_folder) as dense_store:
+                rows = dense_store.list_active_dense_points()
+        except Exception:
+            return np.empty((0, 3), dtype=float)
+        points = np.array([[row["x"], row["y"], row["z"]] for row in rows], dtype=float)
+        if len(points) > max_display_points:
+            idx = np.linspace(0, len(points) - 1, max_display_points, dtype=int)
+            points = points[idx]
+        return points
 
     def _render_key(self, render_data: dict[str, Any]) -> str:
         key_data = {
@@ -177,8 +198,11 @@ class Map3DViewerPanel(ttk.Frame):
             "show_cameras": self.show_cameras_var.get(),
             "show_markers": self.show_markers_var.get(),
             "show_labels": self.show_labels_var.get(),
+            "show_dense": self.show_dense_var.get(),
             "selected_only": self.selected_only_var.get(),
             "pose_source": self.pose_source_var.get(),
+            "dense_points_shape": list(render_data["dense_points"].shape),
+            "dense_points_sum": float(np.sum(render_data["dense_points"])) if len(render_data["dense_points"]) else 0.0,
             "seed_cameras": [_camera_pose_key(pose) for pose in render_data["seed_cameras"]],
             "seed_markers": [_marker_pose_key(pose) for pose in render_data["seed_markers"]],
             "selected_pnp": [
@@ -235,6 +259,11 @@ class Map3DViewerPanel(ttk.Frame):
         if self.show_labels_var.get():
             center = np.mean(corners, axis=0)
             self.axes.text(center[0], center[1], center[2], f"M{marker_id}")
+
+    def _draw_dense_points(self, points: np.ndarray) -> None:
+        if points.size == 0:
+            return
+        self.axes.scatter(points[:, 0], points[:, 1], points[:, 2], c=points[:, 2], cmap="viridis", s=2, alpha=0.75)
 
     def _set_equal_axes(self) -> None:
         xs: list[float] = []
