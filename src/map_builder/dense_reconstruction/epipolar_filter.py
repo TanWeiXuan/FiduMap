@@ -18,6 +18,8 @@ def relative_pose_21(T_W_C1: dict[str, Any], T_W_C2: dict[str, Any]) -> tuple[np
 def compute_ray_angular_errors(
     f1: np.ndarray, f2: np.ndarray, R21: np.ndarray, t21: np.ndarray, eps: float = 1e-12
 ) -> np.ndarray:
+    f1 = f1 / np.linalg.norm(f1, axis=1, keepdims=True)
+    f2 = f2 / np.linalg.norm(f2, axis=1, keepdims=True)
     rf1 = (R21 @ np.asarray(f1, dtype=float).T).T
     n2 = np.cross(np.broadcast_to(np.asarray(t21, dtype=float).reshape(3), (rf1.shape[0], 3)), rf1)
     return np.abs(np.sum(np.asarray(f2, dtype=float) * n2, axis=1)) / np.maximum(np.linalg.norm(n2, axis=1), eps)
@@ -26,6 +28,8 @@ def compute_ray_angular_errors(
 def compute_sampson_errors(
     f1: np.ndarray, f2: np.ndarray, R21: np.ndarray, t21: np.ndarray, eps: float = 1e-12
 ) -> np.ndarray:
+    f1 = f1 / np.linalg.norm(f1, axis=1, keepdims=True)
+    f2 = f2 / np.linalg.norm(f2, axis=1, keepdims=True)
     E = _skew(np.asarray(t21, dtype=float).reshape(3)) @ np.asarray(R21, dtype=float)
     Ef1 = (E @ f1.T).T
     Etf2 = (E.T @ f2.T).T
