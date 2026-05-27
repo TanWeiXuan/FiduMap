@@ -67,7 +67,7 @@ def filter_pair_matches(
     f2 = camera_model.unproject_many(pixels2)
     R21, t21 = relative_pose_21(T_W_C1, T_W_C2)
     errors, inliers = epipolar_inlier_mask(f1, f2, R21, t21, config)
-    ids = [int(m.id) for m in matches if m.id is not None]
+    ids = [int(m.id) if m.id is not None else -1 for m in matches]
     return ids, errors, inliers
 
 
