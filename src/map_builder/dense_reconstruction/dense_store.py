@@ -46,3 +46,19 @@ CREATE INDEX IF NOT EXISTS idx_dense_points_active ON dense_points(is_active);
         with self.conn:
             self.conn.execute('''INSERT INTO dense_images(image_id,rel_path,features_status,num_keypoints,feature_blob,descriptor_blob,score_blob,feature_dtype,descriptor_dtype,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(image_id) DO UPDATE SET rel_path=excluded.rel_path,features_status=excluded.features_status,num_keypoints=excluded.num_keypoints,feature_blob=excluded.feature_blob,descriptor_blob=excluded.descriptor_blob,score_blob=excluded.score_blob,updated_at=excluded.updated_at''', (image_id,rel_path,status,0 if keypoints is None else len(keypoints),None if keypoints is None else numpy_array_to_blob(keypoints),None if descriptors is None else numpy_array_to_blob(descriptors),None if scores is None else numpy_array_to_blob(scores),None if keypoints is None else str(np.asarray(keypoints).dtype),None if descriptors is None else str(np.asarray(descriptors).dtype),_ts()))
     def list_active_dense_points(self): return self.conn.execute('SELECT x,y,z FROM dense_points WHERE is_active=1').fetchall()
+
+
+    def upsert_frame_pair(self, rec):
+        a,b=sorted((rec.image_id_a, rec.image_id_b))
+        with self.conn:
+            self.conn.execute("""INSERT INTO frame_pairs(image_id_a,image_id_b,status,baseline_m,optical_axis_angle_deg,common_marker_count,estimated_overlap_score,num_raw_matches,num_epipolar_inliers,created_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(image_id_a,image_id_b) DO UPDATE SET status=excluded.status,baseline_m=excluded.baseline_m,optical_axis_angle_deg=excluded.optical_axis_angle_deg,common_marker_count=excluded.common_marker_count,estimated_overlap_score=excluded.estimated_overlap_score""",
+            (a,b,rec.status,rec.baseline_m,rec.optical_axis_angle_deg,rec.common_marker_count,rec.estimated_overlap_score,rec.num_raw_matches,rec.num_epipolar_inliers,_ts()))
+
+    def list_frame_pairs(self):
+        return self.conn.execute('SELECT * FROM frame_pairs ORDER BY image_id_a,image_id_b').fetchall()
+
+    def dense_counts(self):
+        q=lambda t: self.conn.execute(f'SELECT COUNT(*) c FROM {t}').fetchone()['c']
+        return {'features': self.conn.execute("SELECT COUNT(*) c FROM dense_images WHERE features_status='success'").fetchone()['c'], 'pairs': q('frame_pairs'), 'matches': q('pair_matches'), 'tracks': q('tracks'), 'points': self.conn.execute('SELECT COUNT(*) c FROM dense_points WHERE is_active=1').fetchone()['c']}
