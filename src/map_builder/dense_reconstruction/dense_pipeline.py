@@ -133,6 +133,9 @@ class DensePipeline:
             if fa is None or fb is None or fa.status != "success" or fb.status != "success":
                 failed += 1
                 continue
+            if fa.descriptors is None or fb.descriptors is None:
+                failed += 1
+                continue
             try:
                 assert matcher is not None
                 matches = matcher.match(fa, fb, pair.id)
