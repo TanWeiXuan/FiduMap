@@ -24,6 +24,9 @@ class ImageViewerPanel(ttk.Frame):
         self._photo: tk.PhotoImage | None = None
         self._current_path: Path | None = None
         self._current_detections: list[MarkerDetection] = []
+        self.show_markers_var = tk.BooleanVar(value=True)
+        self.show_xfeat_var = tk.BooleanVar(value=False)
+        self._xfeat_keypoints = None
         self._source_bgr: Any | None = None
         self._fit_scale = 1.0
         self._zoom = 1.0
@@ -133,7 +136,7 @@ class ImageViewerPanel(ttk.Frame):
             return
         self._clamp_offsets()
         scale = self._scale()
-        photo = _render_photo(self._source_bgr, scale, self._current_detections)
+        photo = _render_photo(self._source_bgr, scale, self._current_detections, self._xfeat_keypoints, bool(self.show_markers_var.get()), bool(self.show_xfeat_var.get()))
         self._photo = photo
         self.canvas.delete("all")
         self.canvas.create_image(round(self._offset_x), round(self._offset_y), image=photo, anchor="nw")
@@ -202,7 +205,7 @@ def _load_image_bgr(path: Path) -> Any:
     return image
 
 
-def _render_photo(image_bgr: Any, scale: float, detections: list[MarkerDetection]) -> tk.PhotoImage:
+def _render_photo(image_bgr: Any, scale: float, detections: list[MarkerDetection], xfeat_keypoints: Any | None = None, show_markers: bool = True, show_xfeat: bool = False) -> tk.PhotoImage:
     import cv2  # type: ignore[import-not-found]
 
     scale = max(scale, 0.001)
@@ -210,8 +213,10 @@ def _render_photo(image_bgr: Any, scale: float, detections: list[MarkerDetection
     height, width = image.shape[:2]
     new_size = (max(int(width * scale), 1), max(int(height * scale), 1))
     resized = cv2.resize(image, new_size, interpolation=cv2.INTER_AREA)
-    if detections:
+    if show_markers and detections:
         _draw_detections(cv2, resized, detections, scale)
+    if show_xfeat and xfeat_keypoints is not None:
+        _draw_xfeat(cv2, resized, xfeat_keypoints, scale)
     rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
     ppm = _rgb_to_ppm(rgb)
     return tk.PhotoImage(data=ppm, format="PPM")
@@ -244,3 +249,13 @@ def _rgb_to_ppm(rgb: Any) -> bytes:
     height, width = rgb.shape[:2]
     header = f"P6 {width} {height} 255\n".encode("ascii")
     return header + rgb.tobytes()
+
+
+def _draw_xfeat(cv2: Any, image: Any, keypoints: Any, scale: float) -> None:
+    import numpy as np
+    pts=np.asarray(keypoints)
+    if pts.size==0:return
+    if len(pts)>5000:
+        idx=np.linspace(0,len(pts)-1,5000,dtype=int); pts=pts[idx]
+    for u,v in pts[:, :2]:
+        cv2.circle(image,(int(round(u*scale)),int(round(v*scale))),1,(20,220,20),-1)
