@@ -5,7 +5,7 @@ External Marker Localisation is a fiducial-marker based localisation project. Th
 1. **Map building**: collect calibrated images of an environment containing ArUco/AprilTag markers, optimise the 3D marker map, and export world-frame marker corner coordinates.
 2. **Runtime localisation**: detect known markers in a live camera image, match them to the exported map, and estimate the camera pose in the saved map frame.
 
-The repository currently has the **Map Builder** as the main fleshed-out implementation. The runtime localisation side is not yet a separate fully implemented module, but the map builder output is designed to support it directly.
+The repository currently has the **Map Builder** as the main fleshed‑out implementation.  An experimental semi‑dense matching and 3D reconstruction pipeline also lives under `src/map_builder/dense_reconstruction` (see [the dense reconstruction section](#dense_reconstruction-experimental)); this pipeline is incomplete and contributions are welcome.  The runtime localisation side is still not a separate fully implemented module, but the map builder output is designed to support it directly.
 
 ## Current implemented workflow
 
@@ -38,7 +38,8 @@ CSV export of world-frame marker corners
 ├── tests/                    # Pytest suite for the map builder
 ├── vendor/
 │   ├── PyRansacLib/          # Git submodule for RANSAC-related utilities
-│   └── azure_ttk_theme/      # Tkinter theme used by the GUI
+│   ├── azure_ttk_theme/      # Tkinter theme used by the GUI
+│   └── xfeat/               # XFeat model and code for dense reconstruction (vendored)
 ├── misc/                     # Placeholder for local/manual artifacts
 ├── run_map_builder.bat       # Windows launcher for the map builder GUI
 ├── .gitmodules               # Submodule definition
@@ -80,6 +81,10 @@ pyceres
 
 `opencv-contrib-python` is required because marker detection uses `cv2.aruco`.
 
+### Optional dependencies
+
+The dense reconstruction pipeline (see the [`dense_reconstruction` section](#dense_reconstruction-experimental)) has additional optional dependencies, including **PyTorch** and the vendored **XFeat** model. These are **not** installed by default.  If you plan to experiment with dense reconstruction, install PyTorch for your platform and ensure that `vendor/xfeat` is present (it is provided as part of this repository).  Without these optional components the dense reconstruction stages will remain unavailable.
+
 ## Running the GUI
 
 On Windows, run:
@@ -104,13 +109,7 @@ From the repository root:
 pytest -q
 ```
 
-The current test run completed successfully:
-
-```text
-36 passed, 5 skipped
-```
-
-Some tests may be skipped depending on optional GUI/display availability.
+The test suite exercises camera projection/unprojection, marker geometry, project persistence, and synthetic bundle adjustment.  The exact number of passing and skipped tests may vary over time and depends on optional GUI/display availability and whether optional dependencies (such as PyTorch) are installed.  Use the command above to execute the tests on your system and review the results.
 
 ---
 
@@ -188,6 +187,7 @@ src/map_builder/
 ├── gui/               # Tkinter GUI
 ├── initialization/    # PnP, observation graph and seed pose initialisation
 ├── optimization/      # pyceres bundle adjustment and residuals
+├── dense_reconstruction/ # experimental semi-dense matching and 3D reconstruction
 ├── project/           # SQLite-backed project store and shared dataclasses
 ├── __init__.py
 └── requirements.txt
@@ -418,6 +418,24 @@ The side-car database is ignored by git:
 .map_builder/
 ```
 
+## `dense_reconstruction` (experimental)
+
+This package contains an initial implementation of a semi‑dense feature matching and 3D reconstruction pipeline built on top of [XFeat](https://github.com/MobileRoboticsSkoltech/xfeat) features and `pyceres`. It is intended to produce a point cloud from overlapping images after marker‑based bundle adjustment. The pipeline includes:
+
+- semi‑dense feature extraction using the XFeat model (vendored in `vendor/xfeat`);
+- candidate frame‑pair selection based on camera poses and marker overlap;
+- matching features across selected pairs;
+- filtering matches via epipolar geometry;
+- triangulating 3D points into the world frame;
+- optional point‑cloud bundle adjustment and duplicate‑point merging;
+- exporting the resulting point cloud to CSV.
+
+### Limitations and contributions
+
+The dense reconstruction module is **not yet complete**. Parts of the pipeline are under active development. A partially working version has been integrated into the GUI, but more development effort is required to finish it. It also requires additional optional dependencies (most notably PyTorch) that are **not** listed in `requirements.txt`. If these dependencies are missing, the module will report the missing packages and prevent the user from running the corresponding stages.
+
+We welcome community contributions to finish and improve the dense reconstruction pipeline, including algorithmic enhancements, better documentation, integration with the rest of the project, and additional tests.
+
 ---
 
 # Other repository components
@@ -451,6 +469,7 @@ The `vendor` folder contains third-party code/assets.
 |---|---|
 | `PyRansacLib` | git submodule for RANSAC-related utilities, likely useful for future runtime localisation |
 | `azure_ttk_theme` | Tkinter theme files used by the GUI |
+| `xfeat` | vendored semi‑dense feature extraction/matching code (XFeat) used by the dense reconstruction pipeline |
 
 When cloning the repository, initialise submodules if needed:
 
