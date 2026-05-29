@@ -1,6 +1,6 @@
-# External Marker Localisation
+# FiduMap
 
-External Marker Localisation is a fiducial-marker based localisation project. The intended system has two phases:
+FiduMap is a fiducial-marker based localisation project. The intended system has two phases:
 
 1. **Map building**: collect calibrated images of an environment containing ArUco/AprilTag markers, optimise the 3D marker map, and export world-frame marker corner coordinates.
 2. **Runtime localisation**: detect known markers in a live camera image, match them to the exported map, and estimate the camera pose in the saved map frame.
