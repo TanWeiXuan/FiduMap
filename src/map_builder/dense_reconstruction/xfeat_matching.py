@@ -48,7 +48,14 @@ class XFeatSemiDenseMatcher:
                 descriptors_b[None, ...],
                 min_cossim=min_cossim,
             )
-            refined = self._try_refine_matches(
+            idx_a = _to_numpy_indices(matched_indices[0][0])
+            idx_b = _to_numpy_indices(matched_indices[0][1])
+            if len(idx_a) != len(idx_b):
+                raise RuntimeError(
+                    f"XFeat semi-dense matching failed for frame-pair {pair_id}: "
+                    "misaligned coarse match index arrays."
+                )
+            refined = self._refine_matches(
                 keypoints_a,
                 descriptors_a,
                 scales_a,
@@ -56,18 +63,29 @@ class XFeatSemiDenseMatcher:
                 descriptors_b,
                 scales_b,
                 matched_indices,
+                pair_id,
             )
-
-        idx_a = _to_numpy_indices(matched_indices[0][0])
-        idx_b = _to_numpy_indices(matched_indices[0][1])
-        if len(idx_a) != len(idx_b):
-            raise RuntimeError("XFeat semi-dense matching returned misaligned match index arrays.")
 
         kpts_a = np.asarray(features_a.keypoints, dtype=np.float32)
         kpts_b = np.asarray(features_b.keypoints, dtype=np.float32)
-        coords = _to_numpy(refined) if refined is not None else None
-        if coords is not None and coords.shape != (len(idx_a), 4):
-            coords = None
+        coords: np.ndarray | None = None
+        if refined is not None:
+            refined_coords, retained_mask = refined
+            mask = np.asarray(_to_numpy(retained_mask), dtype=bool).reshape(-1)
+            if len(mask) != len(idx_a):
+                raise RuntimeError(
+                    f"XFeat fine refinement failed for frame-pair {pair_id}: returned a mask "
+                    f"for {len(mask)} matches, expected {len(idx_a)}."
+                )
+            coords = np.asarray(_to_numpy(refined_coords), dtype=np.float32)
+            expected_shape = (int(np.count_nonzero(mask)), 4)
+            if coords.shape != expected_shape:
+                raise RuntimeError(
+                    f"XFeat fine refinement failed for frame-pair {pair_id}: returned coordinate "
+                    f"shape {coords.shape}, expected {expected_shape}."
+                )
+            idx_a = idx_a[mask]
+            idx_b = idx_b[mask]
 
         scores = self._match_scores(descriptors_a, descriptors_b, idx_a, idx_b)
         rows: list[PairMatchRecord] = []
@@ -100,7 +118,7 @@ class XFeatSemiDenseMatcher:
         scales = self.torch.as_tensor(scales_np, device=self.model.dev)
         return keypoints, descriptors, scales
 
-    def _try_refine_matches(
+    def _refine_matches(
         self,
         keypoints_a: Any,
         descriptors_a: Any,
@@ -109,15 +127,31 @@ class XFeatSemiDenseMatcher:
         descriptors_b: Any,
         scales_b: Any,
         matched_indices: list[tuple[Any, Any]],
-    ) -> Any | None:
+        pair_id: int,
+    ) -> tuple[Any, Any] | None:
         if not hasattr(self.model, "refine_matches"):
             return None
         d0 = {"keypoints": keypoints_a[None, ...], "descriptors": descriptors_a[None, ...], "scales": scales_a[None, ...]}
         d1 = {"keypoints": keypoints_b[None, ...], "descriptors": descriptors_b[None, ...], "scales": scales_b[None, ...]}
         try:
-            return self.model.refine_matches(d0, d1, matches=matched_indices, batch_idx=0)
-        except Exception:
-            return None
+            result = self.model.refine_matches(
+                d0,
+                d1,
+                matches=matched_indices,
+                batch_idx=0,
+                return_mask=True,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"XFeat fine refinement failed for frame-pair {pair_id}: "
+                f"{str(exc) or exc.__class__.__name__}"
+            ) from exc
+        if not isinstance(result, tuple) or len(result) != 2:
+            raise RuntimeError(
+                f"XFeat fine refinement failed for frame-pair {pair_id}: "
+                "the refinement result did not include a retained-match mask."
+            )
+        return result
 
     def _match_scores(self, descriptors_a: Any, descriptors_b: Any, idx_a: np.ndarray, idx_b: np.ndarray) -> np.ndarray | None:
         if len(idx_a) == 0:

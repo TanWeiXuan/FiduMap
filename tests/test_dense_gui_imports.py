@@ -4,6 +4,13 @@ def test_dense_gui_imports():
     import map_builder.gui.map_3d_viewer_panel
 
 
+def test_dense_gui_config_exposes_only_points_only_ba():
+    from map_builder.gui.dense_control_panel import DenseControlPanel
+
+    panel = DenseControlPanel.__new__(DenseControlPanel)
+    assert panel.dense_ba_config().mode == "points_only"
+
+
 def test_dense_count_text_names_feature_images_and_keypoints():
     import tkinter as tk
 

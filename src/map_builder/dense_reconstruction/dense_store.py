@@ -329,6 +329,40 @@ class DenseReconstructionStore:
         row = self.conn.execute("SELECT id FROM frame_pairs WHERE image_id_a=? AND image_id_b=?", (a, b)).fetchone()
         return int(row["id"])
 
+    def replace_frame_pairs(self, records: list[FramePairRecord]) -> list[FramePairRecord]:
+        with self.conn:
+            self._clear_tracks_and_points()
+            self.conn.execute("DELETE FROM pair_matches")
+            self.conn.execute("DELETE FROM frame_pairs")
+            for rec in records:
+                a, b = sorted((int(rec.image_id_a), int(rec.image_id_b)))
+                cur = self.conn.execute(
+                    """
+                    INSERT INTO frame_pairs(
+                        image_id_a,image_id_b,status,baseline_m,optical_axis_angle_deg,
+                        common_marker_count,estimated_overlap_score,num_raw_matches,
+                        num_epipolar_inliers,created_at
+                    )
+                    VALUES(?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        a,
+                        b,
+                        rec.status,
+                        rec.baseline_m,
+                        rec.optical_axis_angle_deg,
+                        rec.common_marker_count,
+                        rec.estimated_overlap_score,
+                        rec.num_raw_matches,
+                        rec.num_epipolar_inliers,
+                        _ts(),
+                    ),
+                )
+                rec.id = int(cur.lastrowid)
+                rec.image_id_a = a
+                rec.image_id_b = b
+        return records
+
     def list_frame_pairs(self, status: str | None = None) -> list[FramePairRecord]:
         if status is None:
             rows = self.conn.execute("SELECT * FROM frame_pairs ORDER BY image_id_a,image_id_b").fetchall()
@@ -427,17 +461,22 @@ class DenseReconstructionStore:
             )
         return inlier_count
 
+    def clear_tracks_and_points(self) -> None:
+        with self.conn:
+            self._clear_tracks_and_points()
+
+    def _clear_tracks_and_points(self) -> None:
+        self.conn.execute("DELETE FROM track_observations")
+        self.conn.execute("DELETE FROM dense_points")
+        self.conn.execute("DELETE FROM tracks")
+        self.conn.execute("UPDATE pair_matches SET is_used_for_track=0")
+
     def replace_tracks_and_points(
         self,
         tracks: list[tuple[TrackRecord, list[TrackObservationRecord], DensePointRecord]],
-        clear_existing: bool = True,
     ) -> None:
         with self.conn:
-            if clear_existing:
-                self.conn.execute("DELETE FROM track_observations")
-                self.conn.execute("DELETE FROM dense_points WHERE source='triangulated'")
-                self.conn.execute("DELETE FROM tracks")
-                self.conn.execute("UPDATE pair_matches SET is_used_for_track=0")
+            self._clear_tracks_and_points()
             for track, observations, point in tracks:
                 cur = self.conn.execute(
                     """
@@ -510,29 +549,32 @@ class DenseReconstructionStore:
 
     def insert_dense_point(self, point: DensePointRecord) -> int:
         with self.conn:
-            cur = self.conn.execute(
-                """
-                INSERT INTO dense_points(
-                    track_id,x,y,z,r,g,b,mean_reprojection_error_px,max_reprojection_error_px,
-                    num_observations,source,is_active
-                )
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-                """,
-                (
-                    point.track_id,
-                    point.x,
-                    point.y,
-                    point.z,
-                    point.r,
-                    point.g,
-                    point.b,
-                    point.mean_reprojection_error_px,
-                    point.max_reprojection_error_px,
-                    point.num_observations,
-                    point.source,
-                    int(point.is_active),
-                ),
+            return self._insert_dense_point(point)
+
+    def _insert_dense_point(self, point: DensePointRecord) -> int:
+        cur = self.conn.execute(
+            """
+            INSERT INTO dense_points(
+                track_id,x,y,z,r,g,b,mean_reprojection_error_px,max_reprojection_error_px,
+                num_observations,source,is_active
             )
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                point.track_id,
+                point.x,
+                point.y,
+                point.z,
+                point.r,
+                point.g,
+                point.b,
+                point.mean_reprojection_error_px,
+                point.max_reprojection_error_px,
+                point.num_observations,
+                point.source,
+                int(point.is_active),
+            ),
+        )
         return int(cur.lastrowid)
 
     def list_active_dense_points(self) -> list[sqlite3.Row]:
@@ -544,7 +586,7 @@ class DenseReconstructionStore:
             for p in points:
                 p.source = source
                 p.is_active = 1
-                self.insert_dense_point(p)
+                self._insert_dense_point(p)
 
     def update_dense_point_coordinates(self, point_id: int, xyz: np.ndarray, source: str = "dense_ba") -> None:
         with self.conn:

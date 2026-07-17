@@ -56,7 +56,6 @@ class DenseControlPanel(ScrollableFrame):
         self.min_triangulation_angle_var = tk.StringVar(value="1.0")
         self.max_reprojection_error_var = tk.StringVar(value="6.0")
         self.duplicate_radius_var = tk.StringVar(value="0.02")
-        self.ba_mode_var = tk.StringVar(value="points_only")
         self.buttons: list[ttk.Button] = []
         self.button_by_stage: dict[str, ttk.Button] = {}
         self.ba_button: ttk.Button | None = None
@@ -83,17 +82,18 @@ class DenseControlPanel(ScrollableFrame):
             ("Min tri angle", self.min_triangulation_angle_var),
             ("Max reproj px", self.max_reprojection_error_var),
             ("Duplicate radius", self.duplicate_radius_var),
-            ("BA mode", self.ba_mode_var),
         ]
         for row, (label, var) in enumerate(fields):
             ttk.Label(config, text=label).grid(row=row, column=0, sticky="w", padx=(0, 6), pady=1)
-            if label in {"Device", "BA mode"}:
-                values = ["auto", "cpu", "cuda"] if label == "Device" else ["points_only", "points_and_cameras", "full"]
-                ttk.Combobox(config, textvariable=var, values=values, state="readonly", width=16).grid(
+            if label == "Device":
+                ttk.Combobox(config, textvariable=var, values=["auto", "cpu", "cuda"], state="readonly", width=16).grid(
                     row=row, column=1, sticky="ew", pady=1
                 )
             else:
                 ttk.Entry(config, textvariable=var, width=16).grid(row=row, column=1, sticky="ew", pady=1)
+        ba_row = len(fields)
+        ttk.Label(config, text="BA mode").grid(row=ba_row, column=0, sticky="w", padx=(0, 6), pady=1)
+        ttk.Label(config, text="points_only (fixed poses)").grid(row=ba_row, column=1, sticky="w", pady=1)
 
         actions = ttk.Frame(frame)
         actions.grid(row=4, column=0, sticky="ew", padx=6, pady=4)
@@ -104,8 +104,8 @@ class DenseControlPanel(ScrollableFrame):
             ("match", "Run Pair Matching", run_match_pairs),
             ("filter", "Run Epipolar Filtering", run_filter_matches),
             ("tracks", "Build Tracks + Triangulate", run_build_tracks),
-            ("merge", "Merge Duplicates", run_merge_duplicates),
             ("ba", "Run Dense Point BA", run_dense_ba),
+            ("merge", "Merge Duplicates", run_merge_duplicates),
             ("export", "Export Dense Point Cloud CSV", export_dense_csv),
         ]
         for row, (stage, text, command) in enumerate(specs):
@@ -190,7 +190,7 @@ class DenseControlPanel(ScrollableFrame):
         return DuplicateMergeConfig(duplicate_merge_radius_m=float(self.duplicate_radius_var.get()))
 
     def dense_ba_config(self) -> DenseBAConfig:
-        return DenseBAConfig(mode=self.ba_mode_var.get())
+        return DenseBAConfig(mode="points_only")
 
     def _update_button_states(self) -> None:
         has_project = self.project_folder is not None

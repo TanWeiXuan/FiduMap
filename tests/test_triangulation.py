@@ -60,3 +60,44 @@ def test_triangulation_rejects_large_reprojection_error():
     cfg = TriangulationConfig(min_triangulation_angle_deg=0.1, max_reprojection_error_px=1.0)
     _X, valid = triangulate_pair_matches(np.array([p1]), np.array([p2]), T1, T2, camera, cfg)
     assert valid.tolist() == [False]
+
+
+def test_multiview_accepts_track_when_best_camera_pair_has_sufficient_parallax():
+    camera = _camera()
+    point = np.array([0.0, 0.0, 10.0])
+    poses = {
+        1: {"R": np.eye(3).tolist(), "t": [0.0, 0.0, 0.0]},
+        2: {"R": np.eye(3).tolist(), "t": [0.05, 0.0, 0.0]},
+        3: {"R": np.eye(3).tolist(), "t": [1.0, 0.0, 0.0]},
+    }
+    observations = [
+        (image_id, 0, *_project(camera, point, pose))
+        for image_id, pose in poses.items()
+    ]
+    cfg = TriangulationConfig(min_observations=3, min_triangulation_angle_deg=1.0)
+
+    triangulated, metrics = triangulate_multiview(observations, poses, camera, cfg)
+
+    assert triangulated is not None
+    assert np.allclose(triangulated, point, atol=1e-6)
+    assert metrics["min_triangulation_angle_deg"] < cfg.min_triangulation_angle_deg
+
+
+def test_multiview_rejects_track_when_all_camera_pairs_have_low_parallax():
+    camera = _camera()
+    point = np.array([0.0, 0.0, 10.0])
+    poses = {
+        1: {"R": np.eye(3).tolist(), "t": [0.0, 0.0, 0.0]},
+        2: {"R": np.eye(3).tolist(), "t": [0.02, 0.0, 0.0]},
+        3: {"R": np.eye(3).tolist(), "t": [0.04, 0.0, 0.0]},
+    }
+    observations = [
+        (image_id, 0, *_project(camera, point, pose))
+        for image_id, pose in poses.items()
+    ]
+    cfg = TriangulationConfig(min_observations=3, min_triangulation_angle_deg=1.0)
+
+    triangulated, metrics = triangulate_multiview(observations, poses, camera, cfg)
+
+    assert triangulated is None
+    assert metrics == {}

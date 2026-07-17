@@ -103,7 +103,8 @@ def triangulate_multiview(
     max_err = float(np.max(errors))
     mean_err = float(np.mean(errors))
     min_angle = min_pairwise_ray_angle_deg(d_arr)
-    if min_angle < config.min_triangulation_angle_deg:
+    max_angle = max_pairwise_ray_angle_deg(d_arr)
+    if max_angle < config.min_triangulation_angle_deg:
         return None, {}
     if mean_err > config.max_mean_reprojection_error_px or max_err > config.max_reprojection_error_px:
         return None, {}
@@ -136,6 +137,16 @@ def min_pairwise_ray_angle_deg(dirs: np.ndarray) -> float:
         for j in range(i + 1, len(d)):
             angle = float(np.degrees(np.arccos(np.clip(np.dot(d[i], d[j]), -1.0, 1.0))))
             best = min(best, angle)
+    return best
+
+
+def max_pairwise_ray_angle_deg(dirs: np.ndarray) -> float:
+    d = _normalize_rows(np.asarray(dirs, dtype=float))
+    best = 0.0
+    for i in range(len(d)):
+        for j in range(i + 1, len(d)):
+            angle = float(np.degrees(np.arccos(np.clip(np.dot(d[i], d[j]), -1.0, 1.0))))
+            best = max(best, angle)
     return best
 
 

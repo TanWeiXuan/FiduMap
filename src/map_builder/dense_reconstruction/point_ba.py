@@ -17,10 +17,11 @@ def run_dense_point_ba(
     camera_model: Any,
     config: DenseBAConfig,
 ) -> DenseStageSummary:
-    if config.mode == "full":
-        raise NotImplementedError("Dense BA full mode is not implemented; use points_only.")
-    if config.mode not in {"points_only", "points_and_cameras"}:
-        raise ValueError(f"Unsupported dense BA mode: {config.mode}")
+    if config.mode != "points_only":
+        raise NotImplementedError(
+            f"Dense BA stage supports only points_only structure optimization; got {config.mode!r}. "
+            "Camera poses remain fixed to the marker-map BA result."
+        )
     try:
         pyceres = importlib.import_module("pyceres")
     except ImportError as exc:
@@ -29,6 +30,11 @@ def run_dense_point_ba(
     run_id = store.create_dense_ba_run(config.mode, backend_name="pyceres")
     try:
         points = store.list_active_dense_points()
+        if any(str(point["source"]) == "merged" for point in points):
+            raise RuntimeError(
+                "Dense BA stage cannot run on an active merged point set. Run dense BA before "
+                "duplicate merging; retriangulation restores track-backed points."
+            )
         observations = store.list_track_observations()
         obs_by_track: dict[int, list[Any]] = {}
         for obs in observations:
@@ -69,6 +75,10 @@ def run_dense_point_ba(
             options.minimizer_progress_to_stdout = False
         summary = pyceres.SolverSummary()
         pyceres.solve(options, problem, summary)
+        if not _summary_solution_usable(summary):
+            raise RuntimeError(
+                "Dense BA stage received an unusable solver result; stored point coordinates were not updated."
+            )
 
         errors: list[float] = []
         for point_id, params in point_params.items():
@@ -82,7 +92,7 @@ def run_dense_point_ba(
         max_err = None if not len(error_norms) else float(error_norms.max())
         store.complete_dense_ba_run(
             run_id,
-            _summary_solution_usable(summary),
+            True,
             initial_cost=_summary_float(summary, "initial_cost"),
             final_cost=_summary_float(summary, "final_cost"),
             mean_reprojection_error_px=mean_err,

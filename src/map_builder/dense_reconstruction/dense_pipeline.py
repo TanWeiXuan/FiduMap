@@ -56,18 +56,25 @@ class DensePipeline:
         with ProjectStore.open(self.folder) as project:
             images = [img for img in project.list_images(include_missing=False) if not img.ignored]
         extractor = XFeatSemiDenseExtractor(cfg)
+        existing_by_image = {image.id: self.store.get_feature(image.id) for image in images}
+        recompute_image_ids = {
+            image.id
+            for image in images
+            if cfg.force_recompute
+            or existing_by_image[image.id] is None
+            or existing_by_image[image.id].status != "success"
+            or not _is_current_semidense_feature(existing_by_image[image.id])
+        }
+        if recompute_image_ids:
+            self.store.replace_frame_pairs([])
         successes = 0
         failures = 0
         total_keypoints = 0
         for index, image in enumerate(images, start=1):
             _emit(progress, f"Extracting features: {index}/{len(images)} images")
-            existing = self.store.get_feature(image.id)
-            if (
-                existing is not None
-                and existing.status == "success"
-                and _is_current_semidense_feature(existing)
-                and not cfg.force_recompute
-            ):
+            existing = existing_by_image[image.id]
+            if image.id not in recompute_image_ids:
+                assert existing is not None
                 successes += 1
                 total_keypoints += int(existing.num_keypoints)
                 continue
@@ -109,8 +116,7 @@ class DensePipeline:
             detections_by_image = {img.id: project.get_detections_for_image(img.id) for img in project.list_images()}
         _emit(progress, f"Selecting frame pairs: 0/{len(poses)} cameras")
         pairs = select_frame_pairs(poses, detections_by_image, cfg)
-        for rec in pairs:
-            self.store.upsert_frame_pair(rec)
+        self.store.replace_frame_pairs(pairs)
         _emit(progress, f"Selected {len(pairs)} candidate pairs")
         return DenseStageSummary(
             stage="pair_selection",
@@ -133,6 +139,8 @@ class DensePipeline:
         if cfg.max_pairs_to_match is not None:
             pairs = pairs[: int(cfg.max_pairs_to_match)]
         matcher = XFeatSemiDenseMatcher(cfg) if pairs else None
+        if pairs:
+            self.store.clear_tracks_and_points()
         matched = 0
         skipped = 0
         failed = 0
@@ -195,12 +203,20 @@ class DensePipeline:
             return DenseStageSummary(stage="epipolar_filter", details=context)
         poses_by_image, camera_model = context
         pairs = [p for p in self.store.list_frame_pairs() if p.num_raw_matches > 0]
+        processable_pairs = [
+            pair
+            for pair in pairs
+            if pair.id is not None
+            and pair.image_id_a in poses_by_image
+            and pair.image_id_b in poses_by_image
+        ]
+        if processable_pairs:
+            self.store.clear_tracks_and_points()
         filtered = 0
         inliers_total = 0
-        for index, pair in enumerate(pairs, start=1):
-            _emit(progress, f"Filtering matches: {index}/{len(pairs)} pairs")
-            if pair.id is None or pair.image_id_a not in poses_by_image or pair.image_id_b not in poses_by_image:
-                continue
+        for index, pair in enumerate(processable_pairs, start=1):
+            _emit(progress, f"Filtering matches: {index}/{len(processable_pairs)} pairs")
+            assert pair.id is not None
             matches = self.store.list_pair_matches(pair.id)
             ids, errors, inliers = filter_pair_matches(
                 matches,

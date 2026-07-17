@@ -103,3 +103,75 @@ def test_dense_counts_separate_feature_images_from_keypoints(tmp_path):
     assert counts["feature_images"] == 2
     assert counts["keypoints"] == 350
     assert counts["features"] == 2
+
+
+def _track_result(x=1.0, feature_offset=0):
+    track = TrackRecord(status="active", num_observations=2, num_images=2, x=x, y=2, z=3)
+    observations = [
+        TrackObservationRecord(0, 1, feature_offset, 10, 20),
+        TrackObservationRecord(0, 2, feature_offset + 1, 11, 21),
+    ]
+    point = DensePointRecord(x=x, y=2, z=3, num_observations=2, source="triangulated")
+    return track, observations, point
+
+
+def test_retriangulation_removes_prior_dense_ba_and_merged_points(tmp_path):
+    store = DenseReconstructionStore.open(tmp_path)
+    store.replace_tracks_and_points([_track_result(x=1.0)])
+    original = store.list_active_dense_points()[0]
+    store.update_dense_point_coordinates(int(original["id"]), np.array([1.1, 2.0, 3.0]), source="dense_ba")
+    store.replace_active_dense_points(
+        [DensePointRecord(track_id=int(original["track_id"]), x=1.2, y=2, z=3)],
+        source="merged",
+    )
+    assert {str(row["source"]) for row in store.conn.execute("SELECT source FROM dense_points")} == {
+        "dense_ba",
+        "merged",
+    }
+
+    store.replace_tracks_and_points([_track_result(x=9.0, feature_offset=10)])
+
+    rows = store.conn.execute("SELECT * FROM dense_points").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["source"] == "triangulated"
+    assert rows[0]["x"] == 9.0
+    orphan_count = store.conn.execute(
+        """
+        SELECT COUNT(*) c FROM dense_points p
+        LEFT JOIN tracks t ON t.id=p.track_id
+        WHERE p.is_active=1 AND p.track_id IS NOT NULL AND t.id IS NULL
+        """
+    ).fetchone()["c"]
+    assert orphan_count == 0
+
+
+def test_replace_frame_pairs_removes_complete_old_reconstruction_and_is_idempotent(tmp_path):
+    store = DenseReconstructionStore.open(tmp_path)
+    old_pairs = store.replace_frame_pairs(
+        [
+            FramePairRecord(image_id_a=1, image_id_b=2),
+            FramePairRecord(image_id_a=2, image_id_b=3),
+        ]
+    )
+    for pair in old_pairs:
+        assert pair.id is not None
+        store.replace_pair_matches(
+            pair.id,
+            [PairMatchRecord(pair.id, 0, 1, 10, 20, 11, 21, is_epipolar_inlier=1, is_used_for_track=1)],
+        )
+    store.replace_tracks_and_points([_track_result()])
+
+    replacement = [FramePairRecord(image_id_a=1, image_id_b=3)]
+    store.replace_frame_pairs(replacement)
+
+    assert [(pair.image_id_a, pair.image_id_b) for pair in store.list_frame_pairs()] == [(1, 3)]
+    assert store.list_pair_matches() == []
+    assert store.list_tracks() == []
+    assert store.list_track_observations() == []
+    assert store.conn.execute("SELECT COUNT(*) c FROM dense_points").fetchone()["c"] == 0
+    first_counts = store.dense_counts()
+
+    store.replace_frame_pairs([FramePairRecord(image_id_a=1, image_id_b=3)])
+
+    assert store.dense_counts() == first_counts
+    assert [(pair.image_id_a, pair.image_id_b) for pair in store.list_frame_pairs()] == [(1, 3)]

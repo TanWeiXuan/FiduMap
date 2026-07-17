@@ -309,7 +309,7 @@ class XFeat(nn.Module):
 
 		return coords
 
-	def refine_matches(self, d0, d1, matches, batch_idx, fine_conf = 0.25):
+	def refine_matches(self, d0, d1, matches, batch_idx, fine_conf = 0.25, return_mask = False):
 		idx0, idx1 = matches[batch_idx]
 		feats1 = d0['descriptors'][batch_idx][idx0]
 		feats2 = d1['descriptors'][batch_idx][idx1]
@@ -328,7 +328,10 @@ class XFeat(nn.Module):
 		mkpts_0 = mkpts_0[mask_good]
 		mkpts_1 = mkpts_1[mask_good]
 
-		return torch.cat([mkpts_0, mkpts_1], dim=-1)
+		refined = torch.cat([mkpts_0, mkpts_1], dim=-1)
+		if return_mask:
+			return refined, mask_good
+		return refined
 
 	@torch.inference_mode()
 	def match(self, feats1, feats2, min_cossim = 0.82):
