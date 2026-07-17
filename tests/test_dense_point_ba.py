@@ -118,7 +118,6 @@ def test_dense_ba_refuses_active_merged_points(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError, match="cannot run on an active merged point set"):
         point_ba.run_dense_point_ba(store, poses, camera, DenseBAConfig())
-
     run = store.conn.execute("SELECT * FROM dense_ba_runs ORDER BY id DESC LIMIT 1").fetchone()
     assert run["success"] == 0
     assert "retriangulation restores track-backed points" in run["error_message"]
@@ -149,11 +148,45 @@ def test_usable_points_only_dense_ba_updates_track_backed_point(tmp_path, monkey
     _FakePyCeres.usable = True
     monkeypatch.setattr(point_ba.importlib, "import_module", lambda _name: _FakePyCeres)
 
-    result = point_ba.run_dense_point_ba(store, poses, camera, DenseBAConfig(mode="points_only"))
+    result = point_ba.run_dense_point_ba(
+        store,
+        poses,
+        camera,
+        DenseBAConfig(
+            mode="points_only",
+            max_mean_reprojection_error_px=10.0,
+            max_reprojection_error_px=10.0,
+        ),
+    )
 
     after = store.list_active_dense_points()[0]
     assert np.allclose([after["x"], after["y"], after["z"]], [0.1, 0.0, 5.0])
     assert after["source"] == "dense_ba"
+    assert after["mean_reprojection_error_px"] == pytest.approx(8.0)
+    track = store.list_tracks()[0]
+    assert np.allclose([track.x, track.y, track.z], [0.1, 0.0, 5.0])
+    assert track.status == "active"
+    assert track.mean_reprojection_error_px == pytest.approx(8.0)
     assert result.success == 1
     run = store.conn.execute("SELECT * FROM dense_ba_runs ORDER BY id DESC LIMIT 1").fetchone()
     assert run["success"] == 1
+
+
+def test_dense_ba_deactivates_point_that_fails_post_solve_quality_checks(tmp_path, monkeypatch):
+    store = DenseReconstructionStore.open(tmp_path)
+    poses, camera = _seed_track_backed_point(store)
+    _FakePyCeres.usable = True
+    monkeypatch.setattr(point_ba.importlib, "import_module", lambda _name: _FakePyCeres)
+
+    result = point_ba.run_dense_point_ba(store, poses, camera, DenseBAConfig())
+
+    assert store.list_active_dense_points() == []
+    row = store.conn.execute("SELECT * FROM dense_points ORDER BY id DESC LIMIT 1").fetchone()
+    assert row["source"] == "dense_ba_rejected"
+    assert row["is_active"] == 0
+    assert row["max_reprojection_error_px"] == pytest.approx(8.0)
+    track = store.list_tracks()[0]
+    assert track.status == "rejected"
+    assert track.max_reprojection_error_px == pytest.approx(8.0)
+    assert result.success == 0
+    assert result.failed == 1

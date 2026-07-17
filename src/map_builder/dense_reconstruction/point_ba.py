@@ -43,17 +43,28 @@ def run_dense_point_ba(
         problem = pyceres.Problem()
         costs: list[Any] = []
         losses: list[Any] = []
+        costs_by_point: dict[int, list[Any]] = {}
         point_params: dict[int, np.ndarray] = {}
+        track_id_by_point: dict[int, int] = {}
+        skipped_points: list[tuple[int, int | None]] = []
         residual_count = 0
         for point in points:
-            if point["track_id"] is None:
-                continue
             point_id = int(point["id"])
+            if point["track_id"] is None:
+                skipped_points.append((point_id, None))
+                continue
+            valid_observations = [
+                obs
+                for obs in obs_by_track.get(int(point["track_id"]), [])
+                if obs.image_id in poses_by_image
+            ]
+            if len(valid_observations) < max(int(config.min_observations), 2):
+                skipped_points.append((point_id, int(point["track_id"])))
+                continue
+
             params = np.ascontiguousarray([point["x"], point["y"], point["z"]], dtype=np.float64)
-            point_params[point_id] = params
-            for obs in obs_by_track.get(int(point["track_id"]), []):
-                if obs.image_id not in poses_by_image:
-                    continue
+            point_costs: list[Any] = []
+            for obs in valid_observations:
                 cost = _PointReprojectionCost(
                     pyceres,
                     camera_model,
@@ -63,9 +74,14 @@ def run_dense_point_ba(
                 )
                 loss = pyceres.HuberLoss(float(config.huber_scale_px))
                 problem.add_residual_block(cost, loss, [params])
+                point_costs.append(cost)
                 costs.append(cost)
                 losses.append(loss)
                 residual_count += 1
+            point_params[point_id] = params
+            track_id_by_point[point_id] = int(point["track_id"])
+            costs_by_point[point_id] = point_costs
+
         if residual_count == 0:
             raise RuntimeError("No dense point observations are available for BA.")
 
@@ -80,16 +96,83 @@ def run_dense_point_ba(
                 "Dense BA stage received an unusable solver result; stored point coordinates were not updated."
             )
 
-        errors: list[float] = []
+        point_results: dict[int, tuple[np.ndarray, float, float, bool]] = {}
+        all_error_norms: list[float] = []
         for point_id, params in point_params.items():
-            store.update_dense_point_coordinates(point_id, params, source="dense_ba")
-        for cost in costs:
-            # Evaluate after solve for user-facing reprojection statistics.
-            params = cost.parameter_block
-            errors.extend(np.abs(cost.compute_residual(params)).tolist())
-        error_norms = np.linalg.norm(np.reshape(errors, (-1, 2)), axis=1) if errors else np.array([], dtype=float)
+            norms = np.array(
+                [
+                    float(np.linalg.norm(cost.compute_residual(params)))
+                    for cost in costs_by_point[point_id]
+                ],
+                dtype=float,
+            )
+            finite = norms[np.isfinite(norms)]
+            mean_err = float(np.mean(finite)) if len(finite) == len(norms) and len(finite) else np.inf
+            max_err = float(np.max(finite)) if len(finite) == len(norms) and len(finite) else np.inf
+            accepted = bool(
+                np.all(np.isfinite(params))
+                and mean_err <= float(config.max_mean_reprojection_error_px)
+                and max_err <= float(config.max_reprojection_error_px)
+            )
+            point_results[point_id] = (params.copy(), mean_err, max_err, accepted)
+            all_error_norms.extend(finite.tolist())
+
+        # Persist only after Ceres reports a usable solution and all post-solve
+        # point diagnostics have been computed. This keeps a failed run from
+        # leaving a partially updated cloud.
+        with store.conn:
+            for point_id, (params, mean_err, max_err, accepted) in point_results.items():
+                stored_mean = None if not np.isfinite(mean_err) else mean_err
+                stored_max = None if not np.isfinite(max_err) else max_err
+                status = "active" if accepted else "rejected"
+                store.conn.execute(
+                    """
+                    UPDATE dense_points
+                    SET x=?, y=?, z=?, source=?, mean_reprojection_error_px=?,
+                        max_reprojection_error_px=?, is_active=?
+                    WHERE id=?
+                    """,
+                    (
+                        float(params[0]),
+                        float(params[1]),
+                        float(params[2]),
+                        "dense_ba" if accepted else "dense_ba_rejected",
+                        stored_mean,
+                        stored_max,
+                        1 if accepted else 0,
+                        point_id,
+                    ),
+                )
+                store.conn.execute(
+                    """
+                    UPDATE tracks
+                    SET x=?, y=?, z=?, mean_reprojection_error_px=?,
+                        max_reprojection_error_px=?, status=?
+                    WHERE id=?
+                    """,
+                    (
+                        float(params[0]),
+                        float(params[1]),
+                        float(params[2]),
+                        stored_mean,
+                        stored_max,
+                        status,
+                        track_id_by_point[point_id],
+                    ),
+                )
+            for point_id, track_id in skipped_points:
+                store.conn.execute(
+                    "UPDATE dense_points SET source='dense_ba_rejected', is_active=0 WHERE id=?",
+                    (point_id,),
+                )
+                if track_id is not None:
+                    store.conn.execute("UPDATE tracks SET status='rejected' WHERE id=?", (track_id,))
+
+        error_norms = np.asarray(all_error_norms, dtype=float)
         mean_err = None if not len(error_norms) else float(error_norms.mean())
         max_err = None if not len(error_norms) else float(error_norms.max())
+        accepted_count = sum(1 for _params, _mean, _max, accepted in point_results.values() if accepted)
+        rejected_count = len(point_results) - accepted_count + len(skipped_points)
         store.complete_dense_ba_run(
             run_id,
             True,
@@ -97,14 +180,18 @@ def run_dense_point_ba(
             final_cost=_summary_float(summary, "final_cost"),
             mean_reprojection_error_px=mean_err,
             max_reprojection_error_px=max_err,
-            num_points=len(point_params),
+            num_points=accepted_count,
             num_observations=residual_count,
         )
         return DenseStageSummary(
             stage="dense_ba",
-            total=len(point_params),
-            success=len(point_params),
-            details=f"Dense BA complete ({config.mode}); optimized {len(point_params)} point(s)",
+            total=len(points),
+            success=accepted_count,
+            failed=rejected_count,
+            details=(
+                f"Dense BA complete ({config.mode}); kept {accepted_count}/{len(points)} point(s)"
+                + (f", rejected {rejected_count} by observation/reprojection checks" if rejected_count else "")
+            ),
         )
     except Exception as exc:
         store.complete_dense_ba_run(run_id, False, error_message=str(exc))
@@ -131,13 +218,11 @@ class _PointReprojectionCost:
                 self.C = np.asarray(T_W_C["t"], dtype=np.float64).reshape(3)
                 self.observed_px = np.asarray(observed_px, dtype=np.float64).reshape(2)
                 self.finite_diff_step = float(finite_diff_step)
-                self.parameter_block: np.ndarray | None = None
 
             def compute_residual(self, point_w: np.ndarray) -> np.ndarray:
                 X = np.asarray(point_w, dtype=np.float64).reshape(3)
-                self.parameter_block = X
                 point_c = self.R.T @ (X - self.C)
-                if point_c[2] <= 1e-12 or np.linalg.norm(point_c) <= 1e-12:
+                if np.linalg.norm(point_c) <= 1e-12:
                     return np.full(2, 1e6, dtype=np.float64)
                 projected = np.asarray(self.camera_model.project(point_c), dtype=np.float64).reshape(2)
                 if not np.all(np.isfinite(projected)):
