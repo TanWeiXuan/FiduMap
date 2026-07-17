@@ -7,6 +7,7 @@ from typing import Any
 
 from map_builder.camera_models import load_camera_model_xml
 from map_builder.dense_reconstruction.availability import (
+    check_dense_ba_availability,
     check_xfeat_extraction_availability,
     check_xfeat_matching_availability,
 )
@@ -15,6 +16,8 @@ from map_builder.dense_reconstruction.duplicate_merge import merge_duplicate_poi
 from map_builder.dense_reconstruction.epipolar_filter import filter_pair_matches
 from map_builder.dense_reconstruction.models import (
     DenseBAConfig,
+    DensePipelineRunSummary,
+    DenseReconstructionConfig,
     DenseStageSummary,
     DuplicateMergeConfig,
     EpipolarFilterConfig,
@@ -48,14 +51,11 @@ class DensePipeline:
         progress: ProgressCallback | None = None,
     ) -> DenseStageSummary:
         cfg = config or XFeatExtractionConfig()
-        availability = check_xfeat_extraction_availability()
-        if not availability.available:
-            return DenseStageSummary(stage="feature_extraction", details=availability.details)
-        import cv2  # type: ignore[import-not-found]
-
         with ProjectStore.open(self.folder) as project:
             images = [img for img in project.list_images(include_missing=False) if not img.ignored]
-        extractor = XFeatSemiDenseExtractor(cfg)
+        if not images:
+            return DenseStageSummary(stage="feature_extraction", details="No active images are available for feature extraction.")
+
         existing_by_image = {image.id: self.store.get_feature(image.id) for image in images}
         recompute_image_ids = {
             image.id
@@ -66,10 +66,20 @@ class DensePipeline:
             or not _is_current_semidense_feature(existing_by_image[image.id])
         }
         if recompute_image_ids:
+            availability = check_xfeat_extraction_availability()
+            if not availability.available:
+                return DenseStageSummary(stage="feature_extraction", details=availability.details)
+            import cv2  # type: ignore[import-not-found]
+
+            extractor = XFeatSemiDenseExtractor(cfg)
             self.store.replace_frame_pairs([])
+        else:
+            extractor = None
+
         successes = 0
         failures = 0
         total_keypoints = 0
+        failure_reasons: list[str] = []
         for index, image in enumerate(images, start=1):
             _emit(progress, f"Extracting features: {index}/{len(images)} images")
             existing = existing_by_image[image.id]
@@ -79,6 +89,7 @@ class DensePipeline:
                 total_keypoints += int(existing.num_keypoints)
                 continue
             try:
+                assert extractor is not None
                 arr = cv2.imread(str(image.absolute_path(self.folder)), cv2.IMREAD_COLOR)
                 if arr is None:
                     raise RuntimeError(f"Could not load image: {image.rel_path}")
@@ -89,18 +100,24 @@ class DensePipeline:
                 self.store.upsert_feature_record(record)
                 successes += 1
                 total_keypoints += int(record.num_keypoints)
-            except Exception:
+            except Exception as exc:
                 self.store.upsert_feature(image.id, image.rel_path, status="failed", width=image.width, height=image.height)
                 failures += 1
+                failure_reasons.append(f"{image.rel_path}: {str(exc) or exc.__class__.__name__}")
+        details = (
+            f"Dense features available for {successes}/{len(images)} image(s); "
+            f"{total_keypoints:,} keypoints total"
+        )
+        if failures:
+            details += f"; failed {failures} image(s)"
+        if failure_reasons:
+            details += "; reasons: " + " | ".join(failure_reasons[:3])
         return DenseStageSummary(
             stage="feature_extraction",
             total=len(images),
             success=successes,
             failed=failures,
-            details=(
-                f"Extracted dense features for {successes}/{len(images)} image(s); "
-                f"{total_keypoints:,} keypoints total"
-            ),
+            details=details,
         )
 
     def build_frame_pairs(
@@ -110,19 +127,44 @@ class DensePipeline:
     ) -> DenseStageSummary:
         cfg = config or PairSelectionConfig()
         with ProjectStore.open(self.folder) as project:
-            poses = project.get_optimized_camera_poses()
-            if not poses:
+            all_poses = project.get_optimized_camera_poses()
+            if not all_poses:
+                self.store.replace_frame_pairs([])
                 return DenseStageSummary(stage="pair_selection", details="Run marker-map BA before dense reconstruction.")
             detections_by_image = {img.id: project.get_detections_for_image(img.id) for img in project.list_images()}
-        _emit(progress, f"Selecting frame pairs: 0/{len(poses)} cameras")
+        feature_image_ids = {feature.image_id for feature in self.store.list_features(status="success")}
+        poses = [pose for pose in all_poses if pose.image_id in feature_image_ids]
+        if len(poses) < 2:
+            self.store.replace_frame_pairs([])
+            return DenseStageSummary(
+                stage="pair_selection",
+                total=len(all_poses),
+                details=(
+                    "At least two optimized cameras with successful dense features are required; "
+                    f"found {len(poses)}/{len(all_poses)}."
+                ),
+            )
+        _emit(progress, f"Selecting frame pairs: 0/{len(poses)} feature-backed cameras")
         pairs = select_frame_pairs(poses, detections_by_image, cfg)
         self.store.replace_frame_pairs(pairs)
         _emit(progress, f"Selected {len(pairs)} candidate pairs")
+        details = (
+            f"Selected {len(pairs)} candidate pair(s) from {len(poses)}/{len(all_poses)} "
+            "optimized cameras with valid dense features"
+        )
+        if pairs:
+            baselines = [float(pair.baseline_m or 0.0) for pair in pairs]
+            common_pairs = sum(1 for pair in pairs if pair.common_marker_count > 0)
+            details += (
+                f"; baseline min/median/max = {min(baselines):.3f}/"
+                f"{statistics.median(baselines):.3f}/{max(baselines):.3f} m"
+                f"; {common_pairs}/{len(pairs)} share markers"
+            )
         return DenseStageSummary(
             stage="pair_selection",
             total=len(poses),
             success=len(pairs),
-            details=f"Selected {len(pairs)} candidate pairs",
+            details=details,
         )
 
     def match_frame_pairs(
@@ -142,6 +184,7 @@ class DensePipeline:
         if pairs:
             self.store.clear_tracks_and_points()
         matched = 0
+        no_matches = 0
         skipped = 0
         failed = 0
         raw_matches = 0
@@ -165,7 +208,11 @@ class DensePipeline:
                 match_count = len(matches)
                 raw_matches += match_count
                 per_pair_counts.append(match_count)
-                matched += 1
+                if match_count:
+                    matched += 1
+                else:
+                    no_matches += 1
+                    self.store.update_frame_pair_matching_status(pair.id, "no_matches")
             except IncompatibleDenseFeatureError as exc:
                 skipped += 1
                 failure_reasons.append(str(exc))
@@ -178,6 +225,7 @@ class DensePipeline:
             total_candidate_pairs=len(candidate_pairs),
             processed_pairs=len(pairs),
             matched_pairs=matched,
+            no_match_pairs=no_matches,
             skipped_pairs=skipped,
             failed_pairs=failed,
             raw_matches=raw_matches,
@@ -188,7 +236,7 @@ class DensePipeline:
             stage="pair_matching",
             total=len(candidate_pairs),
             success=matched,
-            failed=failed,
+            failed=failed + skipped,
             details=details,
         )
 
@@ -213,6 +261,7 @@ class DensePipeline:
         if processable_pairs:
             self.store.clear_tracks_and_points()
         filtered = 0
+        usable_pairs = 0
         inliers_total = 0
         for index, pair in enumerate(processable_pairs, start=1):
             _emit(progress, f"Filtering matches: {index}/{len(processable_pairs)} pairs")
@@ -225,14 +274,20 @@ class DensePipeline:
                 camera_model,
                 cfg,
             )
-            self.store.update_pair_epipolar_results(pair.id, ids, errors, inliers, cfg.min_inliers)
+            inlier_count = self.store.update_pair_epipolar_results(pair.id, ids, errors, inliers, cfg.min_inliers)
             filtered += 1
-            inliers_total += int(inliers.sum())
+            inliers_total += inlier_count
+            if inlier_count >= cfg.min_inliers:
+                usable_pairs += 1
         return DenseStageSummary(
             stage="epipolar_filter",
             total=len(pairs),
-            success=filtered,
-            details=f"Filtered {filtered} pair(s), {inliers_total} inlier match(es)",
+            success=usable_pairs,
+            failed=max(filtered - usable_pairs, 0),
+            details=(
+                f"Epipolar filtering kept {inliers_total:,} inlier match(es) across "
+                f"{usable_pairs}/{filtered} processed pair(s); minimum {cfg.min_inliers} inliers per usable pair"
+            ),
         )
 
     def build_tracks_and_triangulate(
@@ -249,17 +304,22 @@ class DensePipeline:
         matches_by_pair = {
             int(pair.id): self.store.list_pair_matches(pair.id, epipolar_inliers_only=True)
             for pair in pairs
-            if pair.id is not None
+            if pair.id is not None and pair.status == "filtered" and pair.num_epipolar_inliers > 0
         }
-        _emit(progress, f"Building tracks: 0/{sum(len(v) for v in matches_by_pair.values())} inlier matches")
+        inlier_match_count = sum(len(v) for v in matches_by_pair.values())
+        _emit(progress, f"Building tracks: 0/{inlier_match_count} inlier matches")
         tracks = build_tracks_from_matches(pairs, matches_by_pair, poses_by_image, camera_model, cfg)
-        _emit(progress, f"Triangulating tracks: {len(tracks)}/{len(tracks)} tracks")
+        _emit(progress, f"Triangulating tracks: {len(tracks)}/{len(tracks)} accepted tracks")
         self.store.replace_tracks_and_points(tracks)
+        observation_count = sum(len(observations) for _track, observations, _point in tracks)
         return DenseStageSummary(
             stage="track_triangulation",
-            total=sum(len(v) for v in matches_by_pair.values()),
+            total=inlier_match_count,
             success=len(tracks),
-            details=f"Built {len(tracks)} active dense point track(s)",
+            details=(
+                f"Built {len(tracks)} active dense point track(s) from {inlier_match_count:,} epipolar inliers; "
+                f"{observation_count:,} retained track observations"
+            ),
         )
 
     def merge_duplicates(
@@ -269,6 +329,8 @@ class DensePipeline:
     ) -> DenseStageSummary:
         cfg = config or DuplicateMergeConfig()
         points = points_from_rows(self.store.list_active_dense_points())
+        if not points:
+            return DenseStageSummary(stage="duplicate_merge", details="No active dense points are available to merge.")
         observations = self.store.list_track_observations()
         obs_by_track: dict[int, list[Any]] = {}
         for obs in observations:
@@ -297,6 +359,78 @@ class DensePipeline:
         poses_by_image, camera_model = context
         return run_dense_point_ba(self.store, poses_by_image, camera_model, cfg)
 
+    def run_all(
+        self,
+        config: DenseReconstructionConfig | None = None,
+        progress: ProgressCallback | None = None,
+    ) -> DensePipelineRunSummary:
+        cfg = config or DenseReconstructionConfig()
+        stages: list[DenseStageSummary] = []
+        skipped: list[str] = []
+        total_stages = 7
+
+        def run_stage(index: int, label: str, method: Callable[..., DenseStageSummary], stage_config: object) -> DenseStageSummary:
+            _emit(progress, f"[{index}/{total_stages}] {label}")
+            summary = method(
+                stage_config,
+                lambda message: _emit(progress, f"[{index}/{total_stages}] {label}: {message}"),
+            )
+            stages.append(summary)
+            _emit(progress, f"[{index}/{total_stages}] {summary.details}")
+            return summary
+
+        feature_summary = run_stage(1, "Feature extraction", self.extract_features, cfg.extraction)
+        counts = self.store.dense_counts()
+        if feature_summary.success < 2 or counts["feature_images"] < 2:
+            return _stopped_run(stages, skipped, "Feature extraction", "At least two successful feature images are required.")
+
+        pair_summary = run_stage(2, "Frame-pair selection", self.build_frame_pairs, cfg.pair_selection)
+        counts = self.store.dense_counts()
+        if pair_summary.success == 0 or counts["pairs"] == 0:
+            return _stopped_run(stages, skipped, "Frame-pair selection", "No candidate image pairs passed the overlap and baseline filters.")
+
+        match_summary = run_stage(3, "XFeat matching", self.match_frame_pairs, cfg.matching)
+        counts = self.store.dense_counts()
+        if match_summary.success == 0 or counts["matches"] == 0:
+            return _stopped_run(stages, skipped, "XFeat matching", "No refined feature matches were produced.")
+
+        filter_summary = run_stage(4, "Epipolar filtering", self.filter_matches, cfg.epipolar)
+        counts = self.store.dense_counts()
+        if filter_summary.success == 0:
+            return _stopped_run(
+                stages,
+                skipped,
+                "Epipolar filtering",
+                "No image pair retained the required number of camera-pose-consistent matches.",
+            )
+
+        track_summary = run_stage(5, "Track building and triangulation", self.build_tracks_and_triangulate, cfg.triangulation)
+        counts = self.store.dense_counts()
+        if track_summary.success == 0 or counts["points"] == 0:
+            return _stopped_run(stages, skipped, "Track building and triangulation", "No geometrically valid 3D tracks were reconstructed.")
+
+        ba_availability = check_dense_ba_availability()
+        if ba_availability.available:
+            ba_summary = run_stage(6, "Structure-only dense BA", self.run_dense_ba, cfg.dense_ba)
+            counts = self.store.dense_counts()
+            if ba_summary.success == 0 or counts["points"] == 0:
+                return _stopped_run(stages, skipped, "Structure-only dense BA", "All dense points failed post-BA quality checks.")
+        else:
+            skipped.append("dense_ba")
+            _emit(progress, f"[6/{total_stages}] Dense BA skipped: {ba_availability.details}")
+
+        run_stage(7, "Duplicate merging", self.merge_duplicates, cfg.duplicate_merge)
+        counts = self.store.dense_counts()
+        details = (
+            "Dense reconstruction complete: "
+            f"{counts['feature_images']} feature image(s), {counts['pairs']} pair(s), "
+            f"{counts['matches']:,} refined match(es), {counts['inliers']:,} epipolar inlier(s), "
+            f"{counts['points']:,} active point(s)"
+        )
+        if skipped:
+            details += "; skipped: " + ", ".join(skipped)
+        return DensePipelineRunSummary(stages=stages, skipped_stages=skipped, success=True, details=details)
+
     def export_dense_csv(self, path: Path) -> int:
         return export_dense_point_cloud_csv(self.store, path)
 
@@ -310,6 +444,20 @@ class DensePipeline:
                 return "Choose a camera config XML before dense reconstruction."
             camera_model = load_camera_model_xml(camera_path)
         return {pose.image_id: pose.T_W_C for pose in poses}, camera_model
+
+
+def _stopped_run(
+    stages: list[DenseStageSummary],
+    skipped: list[str],
+    stage_label: str,
+    reason: str,
+) -> DensePipelineRunSummary:
+    return DensePipelineRunSummary(
+        stages=stages,
+        skipped_stages=skipped,
+        success=False,
+        details=f"Dense reconstruction stopped after {stage_label}: {reason}",
+    )
 
 
 def _emit(progress: ProgressCallback | None, message: str) -> None:
@@ -328,6 +476,7 @@ def _matching_details(
     total_candidate_pairs: int,
     processed_pairs: int,
     matched_pairs: int,
+    no_match_pairs: int,
     skipped_pairs: int,
     failed_pairs: int,
     raw_matches: int,
@@ -342,8 +491,9 @@ def _matching_details(
     else:
         per_pair = "; per-pair matches min/median/max = 0/0/0"
     parts = [
-        f"Matched {matched_pairs} pair(s), {raw_matches:,} raw matches{per_pair}",
+        f"Matched {matched_pairs} pair(s), {raw_matches:,} refined matches{per_pair}",
         f"processed {processed_pairs}/{total_candidate_pairs} candidate pair(s)",
+        f"zero-match pairs {no_match_pairs}",
         f"skipped {skipped_pairs} incompatible/missing pair(s)",
         f"failed {failed_pairs} pair(s)",
     ]

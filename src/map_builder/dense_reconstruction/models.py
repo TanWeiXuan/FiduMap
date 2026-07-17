@@ -100,6 +100,14 @@ class DenseStageSummary:
 
 
 @dataclass
+class DensePipelineRunSummary:
+    stages: list[DenseStageSummary] = field(default_factory=list)
+    skipped_stages: list[str] = field(default_factory=list)
+    success: bool = True
+    details: str = ""
+
+
+@dataclass
 class XFeatExtractionConfig:
     max_keypoints: int = 20000
     detection_threshold: float = 0.01
@@ -146,6 +154,7 @@ class TriangulationConfig:
     max_reprojection_error_px: float = 6.0
     max_ray_gap_m: float = 0.25
     max_depth_m: float = 100.0
+    max_outlier_iterations: int = 3
 
 
 @dataclass
@@ -161,6 +170,9 @@ class DenseBAConfig:
     huber_scale_px: float = 3.0
     max_num_iterations: int = 50
     finite_diff_step: float = 1e-6
+    min_observations: int = 2
+    max_mean_reprojection_error_px: float = 3.0
+    max_reprojection_error_px: float = 6.0
 
 
 @dataclass
