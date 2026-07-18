@@ -7,8 +7,7 @@ import numpy as np
 import pytest
 
 from map_builder.metric_depth.backends.depth_anything_v2 import DepthAnythingV2AlignedBackend
-from map_builder.metric_depth.backends.prompt_depth_anything import PromptDepthAnythingBackend
-from map_builder.metric_depth.models import BACKEND_DAV2, BACKEND_PROMPT_DA, MetricDepthConfig
+from map_builder.metric_depth.models import MetricDepthConfig
 
 
 def _local_model(env_name: str) -> Path:
@@ -25,19 +24,8 @@ def _local_model(env_name: str) -> Path:
 @pytest.mark.metric_depth_models
 def test_real_dav2_tiny_image_local_checkpoint_only():
     model = _local_model("FIDUMAP_DAV2_MODEL")
-    config = MetricDepthConfig(backend=BACKEND_DAV2, model_id_or_path=str(model), device="cpu", allow_download=False, inference_size=56)
+    config = MetricDepthConfig(model_id_or_path=str(model), device="cpu", allow_download=False, inference_size=56)
     backend = DepthAnythingV2AlignedBackend(); backend.load(config)
     prediction = backend.predict_relative(np.zeros((32, 32, 3), dtype=np.uint8), config)
     backend.close()
     assert prediction.shape == (32, 32) and np.all(np.isfinite(prediction))
-
-
-@pytest.mark.metric_depth_models
-def test_real_promptda_tiny_image_local_checkpoint_only():
-    model = _local_model("FIDUMAP_PROMPTDA_MODEL")
-    config = MetricDepthConfig(backend=BACKEND_PROMPT_DA, model_id_or_path=str(model), device="cpu", allow_download=False, inference_size=56)
-    backend = PromptDepthAnythingBackend(); backend.load(config)
-    prompt = np.zeros((32, 32), dtype=np.float32); prompt[8, 8] = 2.0; prompt[24, 24] = 3.0
-    prediction = backend.predict_metric(np.zeros((32, 32, 3), dtype=np.uint8), prompt, prompt > 0, config)
-    backend.close()
-    assert prediction.shape == (32, 32) and np.any(np.isfinite(prediction))

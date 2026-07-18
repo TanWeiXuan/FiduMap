@@ -6,8 +6,8 @@ from .models import (
     MetricDepthMetrics,
     MetricDepthProgress,
     MetricDepthRunSummary,
-    PromptAnchor,
-    PromptRaster,
+    MetricAnchor,
+    AlignmentAnchorRaster,
 )
 from .pipeline import MetricDepthPipeline
 
@@ -18,6 +18,6 @@ __all__ = [
     "MetricDepthPipeline",
     "MetricDepthProgress",
     "MetricDepthRunSummary",
-    "PromptAnchor",
-    "PromptRaster",
+    "MetricAnchor",
+    "AlignmentAnchorRaster",
 ]

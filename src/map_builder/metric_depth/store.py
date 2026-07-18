@@ -10,7 +10,7 @@ from typing import Any
 
 import numpy as np
 
-from .models import MetricDepthArtifact, MetricDepthMetrics
+from .models import BACKEND_DAV2, MetricDepthArtifact, MetricDepthMetrics
 
 
 PROJECT_DIR_NAME = ".map_builder"
@@ -107,7 +107,7 @@ class MetricDepthStore:
             self.conn.execute(
                 """INSERT INTO depth_map_records(run_id,image_id,status,width,height,prompt_count,prompt_coverage,valid_fraction,median_anchor_error_m,processing_seconds,error_message)
                 VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(run_id,image_id) DO UPDATE SET status=excluded.status,width=excluded.width,height=excluded.height,prompt_count=excluded.prompt_count,prompt_coverage=excluded.prompt_coverage,valid_fraction=excluded.valid_fraction,median_anchor_error_m=excluded.median_anchor_error_m,processing_seconds=excluded.processing_seconds,error_message=excluded.error_message,artifact_rel_path=NULL""",
-                (run_id, image_id, "failed", width, height, m.prompt_point_count, m.prompt_spatial_coverage, m.valid_output_fraction, m.median_anchor_absolute_error_m, m.processing_duration_s, message),
+                (run_id, image_id, "failed", width, height, m.anchor_point_count, m.anchor_spatial_coverage, m.valid_output_fraction, m.median_anchor_absolute_error_m, m.processing_duration_s, message),
             )
 
     def save_artifact_atomic(self, run_id: int, artifact: MetricDepthArtifact) -> Path:
@@ -124,8 +124,6 @@ class MetricDepthStore:
                     range_m=np.asarray(artifact.range_m, dtype=np.float32),
                     valid_mask=np.asarray(artifact.valid_mask, dtype=np.uint8),
                     confidence=np.asarray(artifact.confidence, dtype=np.float16),
-                    prompt_depth_z_m=np.asarray(artifact.prompt_depth_z_m, dtype=np.float32),
-                    prompt_mask=np.asarray(artifact.prompt_mask, dtype=np.uint8),
                     metadata_json=np.array(json.dumps(artifact.metadata, sort_keys=True)),
                     metrics_json=np.array(json.dumps(artifact.metrics.to_dict(), sort_keys=True)),
                     image_id=np.array(artifact.image_id, dtype=np.int64),
@@ -143,7 +141,7 @@ class MetricDepthStore:
             self.conn.execute(
                 """INSERT INTO depth_map_records(run_id,image_id,artifact_rel_path,status,width,height,prompt_count,prompt_coverage,valid_fraction,median_anchor_error_m,processing_seconds,error_message)
                 VALUES(?,?,?,?,?,?,?,?,?,?,?,NULL) ON CONFLICT(run_id,image_id) DO UPDATE SET artifact_rel_path=excluded.artifact_rel_path,status='success',width=excluded.width,height=excluded.height,prompt_count=excluded.prompt_count,prompt_coverage=excluded.prompt_coverage,valid_fraction=excluded.valid_fraction,median_anchor_error_m=excluded.median_anchor_error_m,processing_seconds=excluded.processing_seconds,error_message=NULL""",
-                (run_id, artifact.image_id, rel, "success", artifact.width, artifact.height, m.prompt_point_count, m.prompt_spatial_coverage, m.valid_output_fraction, m.median_anchor_absolute_error_m, m.processing_duration_s),
+                (run_id, artifact.image_id, rel, "success", artifact.width, artifact.height, m.anchor_point_count, m.anchor_spatial_coverage, m.valid_output_fraction, m.median_anchor_absolute_error_m, m.processing_duration_s),
             )
         return target
 
@@ -156,32 +154,34 @@ class MetricDepthStore:
             return None
         with np.load(path, allow_pickle=False) as data:
             metadata = json.loads(str(data["metadata_json"].item()))
-            metrics = MetricDepthMetrics(**json.loads(str(data["metrics_json"].item())))
+            metrics = _load_metrics(str(data["metrics_json"].item()))
             return MetricDepthArtifact(
                 int(data["image_id"]), str(data["backend"].item()), int(row["width"]), int(row["height"]),
                 data["z_depth_m"].astype(np.float32), data["range_m"].astype(np.float32), data["valid_mask"].astype(bool),
-                data["confidence"].astype(np.float32), data["prompt_depth_z_m"].astype(np.float32), data["prompt_mask"].astype(bool), metadata, metrics,
+                data["confidence"].astype(np.float32), metadata, metrics,
             )
 
     def get_record(self, run_id: int, image_id: int) -> sqlite3.Row | None:
         return self.conn.execute("SELECT * FROM depth_map_records WHERE run_id=? AND image_id=?", (int(run_id), int(image_id))).fetchone()
 
-    def latest_successful_record(self, image_id: int, current_marker_ba_run_id: int | None, backend: str | None = None) -> sqlite3.Row | None:
+    def latest_successful_record(self, image_id: int, current_marker_ba_run_id: int | None, backend: str = BACKEND_DAV2) -> sqlite3.Row | None:
         sql = """SELECT r.*,d.backend,d.source_marker_ba_run_id,d.model_reference FROM depth_map_records r JOIN depth_runs d ON d.id=r.run_id
                  WHERE r.image_id=? AND r.status='success' AND d.source_marker_ba_run_id IS ?"""
         args: list[Any] = [int(image_id), current_marker_ba_run_id]
-        if backend:
-            sql += " AND d.backend=?"
-            args.append(backend)
+        sql += " AND d.backend=?"
+        args.append(backend)
         sql += " ORDER BY r.run_id DESC LIMIT 1"
         return self.conn.execute(sql, tuple(args)).fetchone()
 
-    def latest_run_id(self, backend: str | None = None) -> int | None:
-        row = self.conn.execute("SELECT id FROM depth_runs" + (" WHERE backend=?" if backend else "") + " ORDER BY id DESC LIMIT 1", (() if backend is None else (backend,))).fetchone()
+    def latest_run_id(self, backend: str = BACKEND_DAV2) -> int | None:
+        row = self.conn.execute("SELECT id FROM depth_runs WHERE backend=? ORDER BY id DESC LIMIT 1", (backend,)).fetchone()
         return None if row is None else int(row["id"])
 
     def counts(self, current_marker_ba_run_id: int | None) -> dict[str, float | int | None]:
-        rows = self.conn.execute("""SELECT r.*,d.source_marker_ba_run_id FROM depth_map_records r JOIN depth_runs d ON d.id=r.run_id""").fetchall()
+        rows = self.conn.execute(
+            """SELECT r.*,d.source_marker_ba_run_id FROM depth_map_records r JOIN depth_runs d ON d.id=r.run_id WHERE d.backend=?""",
+            (BACKEND_DAV2,),
+        ).fetchall()
         successful = [r for r in rows if r["status"] == "success"]
         current = [r for r in successful if r["source_marker_ba_run_id"] == current_marker_ba_run_id]
         stale = len(successful) - len(current)
@@ -194,12 +194,26 @@ class MetricDepthStore:
             "completed": len(current),
             "failed": sum(r["status"] == "failed" for r in rows),
             "stale": stale,
-            "mean_prompt_count": mean("prompt_count"),
-            "mean_prompt_coverage": mean("prompt_coverage"),
+            "mean_anchor_count": mean("prompt_count"),
+            "mean_anchor_coverage": mean("prompt_coverage"),
             "mean_valid_fraction": mean("valid_fraction"),
             "median_anchor_error_m": float(np.median(errors)) if errors else None,
             "mean_processing_seconds": mean("processing_seconds"),
         }
+
+
+def _load_metrics(encoded: str) -> MetricDepthMetrics:
+    raw = json.loads(encoded)
+    legacy_names = {
+        "prompt_point_count": "anchor_point_count",
+        "prompt_pixel_count": "anchor_pixel_count",
+        "prompt_spatial_coverage": "anchor_spatial_coverage",
+    }
+    for old, new in legacy_names.items():
+        if old in raw and new not in raw:
+            raw[new] = raw[old]
+    allowed = MetricDepthMetrics.__dataclass_fields__
+    return MetricDepthMetrics(**{key: value for key, value in raw.items() if key in allowed})
 
 
 def dense_state_signature(dense_store: Any) -> str:

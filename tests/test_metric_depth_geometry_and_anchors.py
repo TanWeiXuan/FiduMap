@@ -4,9 +4,9 @@ import numpy as np
 
 from map_builder.camera_models import OmniRadTanCameraModel, PinholeRadTanCameraModel
 from map_builder.geometry import SE3
+from map_builder.metric_depth.anchor_builder import dense_track_anchors, marker_surface_anchors, rasterize_anchors
 from map_builder.metric_depth.geometry import intersect_marker_plane, range_to_world_points, z_depth_to_range
-from map_builder.metric_depth.models import PromptAnchor
-from map_builder.metric_depth.prompt_builder import dense_track_anchors, marker_surface_anchors, rasterize_anchors
+from map_builder.metric_depth.models import MetricAnchor
 from map_builder.project import MarkerDetection, OptimizedMarkerPose
 
 
@@ -30,7 +30,6 @@ def test_omni_forward_round_trip_and_nonforward_invalidation():
     z = np.ones((5, 5), dtype=np.float32)
     ranges, valid = z_depth_to_range(z, camera)
     assert valid[2, 2]
-    # This synthetic omni camera has rear-facing corner rays, which must be invalid.
     assert not valid[0, 0]
     assert ranges[0, 0] == 0
 
@@ -65,20 +64,20 @@ def test_visible_marker_square_rasterizes_exact_plane_depth():
     detection = MarkerDetection("aruco", "DICT_6X6_250", 4, [[2, 2], [6, 2], [6, 6], [2, 6]], "none")
     pose = OptimizedMarkerPose(4, 1, marker_pose.to_json_dict())
     anchors = marker_surface_anchors([detection], [pose], SE3.identity(), camera, 1.0, 9, 9)
-    prompt = rasterize_anchors(anchors, 9, 9)
-    assert prompt.mask[4, 4]
-    assert np.isclose(prompt.depth_z_m[4, 4], 2.0)
-    assert np.all(prompt.provenance[prompt.mask] == 2)
+    raster = rasterize_anchors(anchors, 9, 9)
+    assert raster.mask[4, 4]
+    assert np.isclose(raster.depth_z_m[4, 4], 2.0)
+    assert np.all(raster.provenance[raster.mask] == 2)
 
 
-def test_prompt_collision_priority_and_spatial_coverage():
+def test_anchor_collision_priority_and_spatial_coverage():
     anchors = [
-        PromptAnchor(1, 1, 4.0, 4.0, 0.9, "dense_track"),
-        PromptAnchor(1, 1, 6.0, 6.0, 1.0, "marker_surface"),
-        PromptAnchor(6, 6, 3.0, 3.0, 0.8, "dense_track"),
+        MetricAnchor(1, 1, 4.0, 4.0, 0.9, "dense_track"),
+        MetricAnchor(1, 1, 6.0, 6.0, 1.0, "marker_surface"),
+        MetricAnchor(6, 6, 3.0, 3.0, 0.8, "dense_track"),
     ]
-    prompt = rasterize_anchors(anchors, 8, 8)
-    assert prompt.depth_z_m[1, 1] == 6.0
-    assert prompt.pixel_count == 2
-    assert prompt.occupied_grid_cells == 2
-    assert prompt.spatial_coverage == 2 / 16
+    raster = rasterize_anchors(anchors, 8, 8)
+    assert raster.depth_z_m[1, 1] == 6.0
+    assert raster.pixel_count == 2
+    assert raster.occupied_grid_cells == 2
+    assert raster.spatial_coverage == 2 / 16

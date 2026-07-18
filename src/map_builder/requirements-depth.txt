@@ -1,5 +1,4 @@
-# Optional metric-depth inference stack. Transformers 4.56.2 includes both
-# Depth Anything V2 and Prompt Depth Anything model/processor classes.
+# Optional Depth Anything V2 metric-depth inference stack.
 torch>=2.2,<3
 transformers==4.56.2
 safetensors>=0.4,<1

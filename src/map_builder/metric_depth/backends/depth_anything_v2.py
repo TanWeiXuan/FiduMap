@@ -5,10 +5,18 @@ import numpy as np
 from ..alignment import robust_affine_inverse_depth_alignment
 from ..geometry import z_depth_to_range
 from ..models import MetricDepthArtifact, MetricDepthMetrics
-from .base import MetricDepthBackend
 
 
-class DepthAnythingV2AlignedBackend(MetricDepthBackend):
+class DepthAnythingV2AlignedBackend:
+    def __init__(self) -> None:
+        self.model = None
+        self.processor = None
+        self.device = "cpu"
+
+    def close(self) -> None:
+        self.model = None
+        self.processor = None
+
     def load(self, config: object) -> None:
         try:
             import torch
@@ -43,13 +51,13 @@ class DepthAnythingV2AlignedBackend(MetricDepthBackend):
         processed = self.processor.post_process_depth_estimation(outputs, target_sizes=[(image.height, image.width)])
         return processed[0]["predicted_depth"].detach().float().cpu().numpy().astype(np.float32)
 
-    def infer(self, image_rgb: np.ndarray, prompt: object, camera_model: object, config: object, progress: object = None) -> MetricDepthArtifact:
+    def infer(self, image_rgb: np.ndarray, anchors: object, camera_model: object, config: object, progress: object = None) -> MetricDepthArtifact:
         relative = self.predict_relative(image_rgb, config)
         result = robust_affine_inverse_depth_alignment(
             relative,
-            prompt.depth_z_m,
-            prompt.mask,
-            prompt.confidence,
+            anchors.depth_z_m,
+            anchors.mask,
+            anchors.confidence,
             int(getattr(config, "minimum_anchor_count")),
             int(getattr(config, "minimum_anchor_grid_cells")),
             float(getattr(config, "maximum_alignment_median_relative_error")),
@@ -58,16 +66,16 @@ class DepthAnythingV2AlignedBackend(MetricDepthBackend):
         valid = result.valid_mask & ray_valid & bool(result.success)
         confidence = _confidence_from_support(
             valid,
-            prompt.mask,
-            prompt.confidence,
+            anchors.mask,
+            anchors.confidence,
             result.median_relative_error,
             int(np.count_nonzero(result.inlier_mask)),
-            max(prompt.pixel_count, 1),
+            max(anchors.pixel_count, 1),
         )
         metrics = MetricDepthMetrics(
-            prompt_point_count=prompt.anchor_count,
-            prompt_pixel_count=prompt.pixel_count,
-            prompt_spatial_coverage=prompt.spatial_coverage,
+            anchor_point_count=anchors.anchor_count,
+            anchor_pixel_count=anchors.pixel_count,
+            anchor_spatial_coverage=anchors.spatial_coverage,
             valid_output_fraction=float(np.mean(valid)),
             median_anchor_absolute_error_m=result.median_absolute_error_m,
             median_anchor_relative_error=result.median_relative_error,
@@ -76,7 +84,18 @@ class DepthAnythingV2AlignedBackend(MetricDepthBackend):
             error_message=result.error_message,
         )
         h, w = relative.shape
-        return MetricDepthArtifact(0, "depth_anything_v2_aligned", w, h, result.z_depth_m, ranges, valid, confidence, prompt.depth_z_m, prompt.mask, {"alignment_a": result.coefficient_a, "alignment_b": result.coefficient_b}, metrics)
+        return MetricDepthArtifact(
+            0,
+            "depth_anything_v2_aligned",
+            w,
+            h,
+            result.z_depth_m,
+            ranges,
+            valid,
+            confidence,
+            {"alignment_a": result.coefficient_a, "alignment_b": result.coefficient_b},
+            metrics,
+        )
 
 
 def _confidence_from_support(valid: np.ndarray, support: np.ndarray, support_confidence: np.ndarray, median_relative_error: float | None, inliers: int, count: int) -> np.ndarray:

@@ -35,7 +35,7 @@ class ImageViewerPanel(ttk.Frame):
         ttk.Combobox(
             controls,
             textvariable=self.display_mode_var,
-            values=["RGB", "Metric range", "Camera Z-depth", "Confidence", "Prompt depth", "RGB + metric range overlay"],
+            values=["RGB", "Metric range", "Camera Z-depth", "Confidence", "RGB + metric range overlay"],
             state="readonly",
             width=28,
         ).grid(row=0, column=3, sticky="w")
@@ -186,11 +186,10 @@ class ImageViewerPanel(ttk.Frame):
         z = float(artifact.z_depth_m[v, u])
         radial = float(artifact.range_m[v, u])
         confidence = float(artifact.confidence[v, u])
-        prompt = bool(artifact.prompt_mask[v, u])
         valid = bool(artifact.valid_mask[v, u])
         self.pixel_readout_var.set(
             f"u={u}, v={v}  Z={'%.3f m' % z if valid else 'invalid'}  range={'%.3f m' % radial if valid else 'invalid'}  "
-            f"confidence={confidence:.3f}  prompt={'yes' if prompt else 'no'}  backend={artifact.backend}"
+            f"confidence={confidence:.3f}  backend={artifact.backend}"
         )
 
     def _render(self) -> None:
@@ -352,10 +351,6 @@ def render_depth_display(rgb_source_bgr: Any, artifact: Any, mode: str) -> tuple
         values = np.asarray(artifact.confidence, dtype=float)
         valid = np.asarray(artifact.valid_mask, dtype=bool)
         unit = "confidence"
-    elif mode == "Prompt depth":
-        values = np.asarray(artifact.prompt_depth_z_m, dtype=float)
-        valid = np.asarray(artifact.prompt_mask, dtype=bool)
-        unit = "m prompt Z"
     else:
         return source.copy(), ""
     valid = valid & np.isfinite(values)

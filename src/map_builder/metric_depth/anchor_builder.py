@@ -9,7 +9,7 @@ from map_builder.geometry.se3 import SE3
 
 from .alignment import occupied_grid_cells
 from .geometry import FORWARD_RAY_EPS, intersect_marker_plane
-from .models import PromptAnchor, PromptRaster
+from .models import AlignmentAnchorRaster, MetricAnchor
 
 
 MARKER_SURFACE = "marker_surface"
@@ -22,7 +22,7 @@ def dense_track_anchors(
     dense_points: Iterable[Any],
     observations: Iterable[Any],
     tracks: Iterable[Any] = (),
-) -> list[PromptAnchor]:
+) -> list[MetricAnchor]:
     """Use only active points whose track is actually observed in this image."""
     point_by_track = {
         int(_value(p, "track_id")): p
@@ -30,7 +30,7 @@ def dense_track_anchors(
         if _value(p, "track_id") is not None and bool(_value(p, "is_active", 1))
     }
     track_by_id = {int(_value(t, "id")): t for t in tracks if _value(t, "id") is not None}
-    anchors: list[PromptAnchor] = []
+    anchors: list[MetricAnchor] = []
     Rcw = T_W_C.R.T
     for obs in observations:
         if int(_value(obs, "image_id")) != int(image_id):
@@ -57,7 +57,7 @@ def dense_track_anchors(
         u, v = float(_value(obs, "x")), float(_value(obs, "y"))
         if not np.isfinite(u) or not np.isfinite(v):
             continue
-        anchors.append(PromptAnchor(u, v, float(X_C[2]), radial, confidence, DENSE_TRACK))
+        anchors.append(MetricAnchor(u, v, float(X_C[2]), radial, confidence, DENSE_TRACK))
     return anchors
 
 
@@ -69,9 +69,9 @@ def marker_surface_anchors(
     marker_size_m: float,
     width: int,
     height: int,
-) -> list[PromptAnchor]:
+) -> list[MetricAnchor]:
     pose_by_marker = {int(_value(p, "marker_id")): SE3.from_json_dict(_value(p, "T_W_M")) for p in marker_poses}
-    anchors: list[PromptAnchor] = []
+    anchors: list[MetricAnchor] = []
     try:
         import cv2  # type: ignore[import-not-found]
     except ImportError as exc:
@@ -88,17 +88,16 @@ def marker_surface_anchors(
         if x0 >= x1 or y0 >= y1:
             continue
         local_mask = np.zeros((y1 - y0, x1 - x0), dtype=np.uint8)
-        shifted = polygon - np.array([x0, y0], dtype=np.int32)
-        cv2.fillConvexPoly(local_mask, shifted, 1)
+        cv2.fillConvexPoly(local_mask, polygon - np.array([x0, y0], dtype=np.int32), 1)
         yy, xx = np.nonzero(local_mask)
         pixels = np.column_stack((xx + x0, yy + y0)).astype(float)
         valid, z, ranges = intersect_marker_plane(pixels, camera_model, T_W_C, pose, marker_size_m)
         for pixel, z_m, range_m in zip(pixels[valid], z[valid], ranges[valid]):
-            anchors.append(PromptAnchor(float(pixel[0]), float(pixel[1]), float(z_m), float(range_m), 1.0, MARKER_SURFACE))
+            anchors.append(MetricAnchor(float(pixel[0]), float(pixel[1]), float(z_m), float(range_m), 1.0, MARKER_SURFACE))
     return anchors
 
 
-def rasterize_anchors(anchors: Iterable[PromptAnchor], width: int, height: int, grid_size: int = 4) -> PromptRaster:
+def rasterize_anchors(anchors: Iterable[MetricAnchor], width: int, height: int, grid_size: int = 4) -> AlignmentAnchorRaster:
     depth = np.zeros((height, width), dtype=np.float32)
     mask = np.zeros((height, width), dtype=bool)
     confidence = np.zeros((height, width), dtype=np.float32)
@@ -106,9 +105,7 @@ def rasterize_anchors(anchors: Iterable[PromptAnchor], width: int, height: int, 
     anchor_list = list(anchors)
     for anchor in anchor_list:
         u, v = int(round(anchor.u)), int(round(anchor.v))
-        if not (0 <= u < width and 0 <= v < height):
-            continue
-        if not np.isfinite(anchor.z_depth_m) or anchor.z_depth_m <= 0.0:
+        if not (0 <= u < width and 0 <= v < height) or not np.isfinite(anchor.z_depth_m) or anchor.z_depth_m <= 0.0:
             continue
         priority = 2 if anchor.provenance == MARKER_SURFACE else 1
         replace = not mask[v, u]
@@ -126,19 +123,10 @@ def rasterize_anchors(anchors: Iterable[PromptAnchor], width: int, height: int, 
             provenance[v, u] = np.uint8(priority)
             mask[v, u] = True
     cells = occupied_grid_cells(mask, grid_size)
-    return PromptRaster(
-        depth_z_m=depth,
-        mask=mask,
-        confidence=confidence,
-        provenance=provenance,
-        anchor_count=len(anchor_list),
-        pixel_count=int(np.count_nonzero(mask)),
-        occupied_grid_cells=cells,
-        spatial_coverage=float(cells) / float(grid_size * grid_size),
-    )
+    return AlignmentAnchorRaster(depth, mask, confidence, provenance, len(anchor_list), int(np.count_nonzero(mask)), cells, float(cells) / float(grid_size * grid_size))
 
 
-def build_trusted_prompt(
+def build_alignment_anchors(
     image_id: int,
     T_W_C: SE3,
     camera_model: Any,
@@ -152,8 +140,8 @@ def build_trusted_prompt(
     tracks: Iterable[Any],
     include_dense_tracks: bool,
     include_marker_surfaces: bool,
-) -> PromptRaster:
-    anchors: list[PromptAnchor] = []
+) -> AlignmentAnchorRaster:
+    anchors: list[MetricAnchor] = []
     if include_dense_tracks:
         anchors.extend(dense_track_anchors(image_id, T_W_C, dense_points, observations, tracks))
     if include_marker_surfaces and marker_size_m is not None:

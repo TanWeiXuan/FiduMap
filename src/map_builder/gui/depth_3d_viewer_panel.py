@@ -9,7 +9,7 @@ from typing import Any
 import numpy as np
 
 from map_builder.metric_depth.availability import check_vtk_availability
-from map_builder.metric_depth.geometry import deterministic_decimate, range_to_world_points, z_depth_to_range
+from map_builder.metric_depth.geometry import deterministic_decimate, range_to_world_points
 from map_builder.geometry.marker_geometry import marker_corners_y_up
 from map_builder.geometry.se3 import SE3
 
@@ -72,7 +72,7 @@ class Depth3DViewerPanel(ttk.Frame):
         self.maximum_points_var = tk.IntVar(value=200000)
         ttk.Button(controls, text="Refresh", command=self.refresh).grid(row=0, column=0)
         ttk.Button(controls, text="Reset camera", command=self.reset_camera).grid(row=0, column=1)
-        ttk.Combobox(controls, textvariable=self.color_mode_var, values=["RGB", "Range", "Confidence", "Prompt versus prediction"], state="readonly", width=22).grid(row=0, column=2)
+        ttk.Combobox(controls, textvariable=self.color_mode_var, values=["RGB", "Range", "Confidence"], state="readonly", width=22).grid(row=0, column=2)
         ttk.Label(controls, text="Confidence threshold").grid(row=1, column=0)
         ttk.Entry(controls, textvariable=self.confidence_var, width=8).grid(row=1, column=1)
         ttk.Label(controls, text="Point size").grid(row=1, column=2)
@@ -82,8 +82,7 @@ class Depth3DViewerPanel(ttk.Frame):
         self.show_frustum_var = tk.BooleanVar(value=True)
         self.show_markers_var = tk.BooleanVar(value=True)
         self.show_dense_var = tk.BooleanVar(value=False)
-        self.show_prompts_var = tk.BooleanVar(value=True)
-        for col, (label, var) in enumerate((("Show selected camera frustum", self.show_frustum_var), ("Show marker geometry", self.show_markers_var), ("Show original dense reconstruction points", self.show_dense_var), ("Show prompt anchors", self.show_prompts_var))):
+        for col, (label, var) in enumerate((("Show selected camera frustum", self.show_frustum_var), ("Show marker geometry", self.show_markers_var), ("Show original dense reconstruction points", self.show_dense_var))):
             ttk.Checkbutton(controls, text=label, variable=var).grid(row=3 + col // 2, column=(col % 2) * 2, columnspan=2, sticky="w")
         self.body = ttk.Frame(self)
         self.body.pack(fill="both", expand=True)
@@ -138,19 +137,10 @@ class Depth3DViewerPanel(ttk.Frame):
             colors = range_scalars(np.asarray(self.artifact.range_m)[pixels[:, 1], pixels[:, 0]])
         elif mode == "Confidence":
             colors = confidence_scalars(np.asarray(self.artifact.confidence)[pixels[:, 1], pixels[:, 0]])
-        elif mode == "Prompt versus prediction":
-            prompted = np.asarray(self.artifact.prompt_mask)[pixels[:, 1], pixels[:, 0]]
-            colors = np.where(prompted[:, None], np.array([255, 170, 0], dtype=np.uint8), np.array([30, 160, 255], dtype=np.uint8))
         else:
             colors = rgb
         self._renderer.RemoveAllViewProps()
         self._renderer.AddActor(_vtk_point_actor(points, colors, float(self.point_size_var.get())))
-        if self.show_prompts_var.get() and np.any(self.artifact.prompt_mask):
-            prompt_range, prompt_valid = z_depth_to_range(self.artifact.prompt_depth_z_m, self.camera_model)
-            prompt_points, _ = range_to_world_points(prompt_range, prompt_valid & self.artifact.prompt_mask, self.camera_model, self.T_W_C)
-            prompt_indices = deterministic_decimate(len(prompt_points), min(int(self.maximum_points_var.get()), 50_000))
-            prompt_points = prompt_points[prompt_indices]
-            self._renderer.AddActor(_vtk_point_actor(prompt_points, np.tile(np.array([[255, 170, 0]], dtype=np.uint8), (len(prompt_points), 1)), max(float(self.point_size_var.get()) * 2, 3)))
         if self.show_dense_var.get() and self.dense_points:
             dense_xyz = np.array([[_record_value(row, "x"), _record_value(row, "y"), _record_value(row, "z")] for row in self.dense_points], dtype=np.float32)
             dense_xyz = dense_xyz[np.all(np.isfinite(dense_xyz), axis=1)]

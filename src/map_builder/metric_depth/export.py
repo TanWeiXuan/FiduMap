@@ -25,8 +25,6 @@ def export_artifact(artifact: MetricDepthArtifact, output_folder: Path, stem: st
         range_m=np.asarray(artifact.range_m, dtype=np.float32),
         valid_mask=np.asarray(artifact.valid_mask, dtype=np.uint8),
         confidence=np.asarray(artifact.confidence, dtype=np.float32),
-        prompt_depth_z_m=np.asarray(artifact.prompt_depth_z_m, dtype=np.float32),
-        prompt_mask=np.asarray(artifact.prompt_mask, dtype=np.uint8),
     )
     valid = np.asarray(artifact.valid_mask, dtype=bool) & np.isfinite(artifact.range_m) & (artifact.range_m > 0.0)
     overflow = valid & (artifact.range_m * 1000.0 > np.iinfo(np.uint16).max)
@@ -34,11 +32,9 @@ def export_artifact(artifact: MetricDepthArtifact, output_folder: Path, stem: st
     representable = valid & ~overflow
     range_mm[representable] = np.rint(artifact.range_m[representable] * 1000.0).astype(np.uint16)
     confidence = np.clip(np.asarray(artifact.confidence) * 255.0, 0, 255).astype(np.uint8)
-    prompt_mask = np.asarray(artifact.prompt_mask, dtype=np.uint8) * 255
     range_path = folder / f"{prefix}_range_mm.png"
     confidence_path = folder / f"{prefix}_confidence.png"
-    prompt_path = folder / f"{prefix}_prompt_mask.png"
-    for path, image in ((range_path, range_mm), (confidence_path, confidence), (prompt_path, prompt_mask)):
+    for path, image in ((range_path, range_mm), (confidence_path, confidence)):
         if not cv2.imwrite(str(path), image):
             raise RuntimeError(f"Could not write portable depth image: {path}")
     metadata = dict(artifact.metadata)
@@ -54,7 +50,7 @@ def export_artifact(artifact: MetricDepthArtifact, output_folder: Path, stem: st
     })
     json_path = folder / f"{prefix}.json"
     json_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
-    return {"npz": npz_path, "metadata": json_path, "range_mm": range_path, "confidence": confidence_path, "prompt_mask": prompt_path}
+    return {"npz": npz_path, "metadata": json_path, "range_mm": range_path, "confidence": confidence_path}
 
 
 def export_stored_artifact(store: Any, run_id: int, image_id: int, output_folder: Path, stem: str | None = None) -> dict[str, Path]:

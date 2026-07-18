@@ -5,23 +5,25 @@ import numpy as np
 import pytest
 
 from map_builder.metric_depth.export import export_artifact
-from map_builder.metric_depth.models import MetricDepthArtifact, MetricDepthMetrics
+from map_builder.metric_depth.models import BACKEND_DAV2, MetricDepthArtifact, MetricDepthMetrics
 from map_builder.metric_depth.store import MetricDepthStore
 
 
 def _artifact(image_id=2, distance=2.0):
     z = np.full((3, 4), distance, dtype=np.float32)
     valid = np.ones((3, 4), dtype=bool)
-    return MetricDepthArtifact(image_id, "fake", 4, 3, z, z.copy(), valid, np.full_like(z, 0.75), np.where(valid, 1.5, 0).astype(np.float32), valid.copy(), {"test": True}, MetricDepthMetrics(prompt_pixel_count=12, prompt_spatial_coverage=0.5, valid_output_fraction=1.0, status="success"))
+    return MetricDepthArtifact(image_id, BACKEND_DAV2, 4, 3, z, z.copy(), valid, np.full_like(z, 0.75), {"test": True}, MetricDepthMetrics(anchor_pixel_count=12, anchor_spatial_coverage=0.5, valid_output_fraction=1.0, status="success"))
 
 
 def test_atomic_npz_and_metadata_round_trip_and_staleness(tmp_path):
     with MetricDepthStore.open(tmp_path) as store:
-        run = store.create_run("fake", "local", {}, 7, "points=0")
+        run = store.create_run(BACKEND_DAV2, "local", {}, 7, "points=0")
         path = store.save_artifact_atomic(run, _artifact())
         assert path.exists()
         loaded = store.load_artifact(run, 2)
         assert loaded is not None and np.allclose(loaded.range_m, 2.0)
+        with np.load(path, allow_pickle=False) as data:
+            assert set(data.files) == {"z_depth_m", "range_m", "valid_mask", "confidence", "metadata_json", "metrics_json", "image_id", "backend"}
         assert store.latest_successful_record(2, 7) is not None
         assert store.latest_successful_record(2, 8) is None
         assert store.counts(8)["stale"] == 1
@@ -30,6 +32,9 @@ def test_atomic_npz_and_metadata_round_trip_and_staleness(tmp_path):
 def test_portable_uint16_export_and_overflow_warning(tmp_path):
     artifact = _artifact(distance=2.345)
     paths = export_artifact(artifact, tmp_path)
+    with np.load(paths["npz"], allow_pickle=False) as data:
+        assert set(data.files) == {"z_depth_m", "range_m", "valid_mask", "confidence"}
+    assert set(paths) == {"npz", "metadata", "range_mm", "confidence"}
     range_mm = cv2.imread(str(paths["range_mm"]), cv2.IMREAD_UNCHANGED)
     assert range_mm.dtype == np.uint16 and range_mm[0, 0] == 2345
     overflow = _artifact(distance=70.0)
@@ -37,6 +42,37 @@ def test_portable_uint16_export_and_overflow_warning(tmp_path):
     metadata = overflow_paths["metadata"].read_text(encoding="utf-8")
     assert '"portable_range_mm_overflow": true' in metadata
     assert cv2.imread(str(overflow_paths["range_mm"]), cv2.IMREAD_UNCHANGED)[0, 0] == 0
+
+
+def test_legacy_dav2_npz_extra_arrays_are_ignored(tmp_path):
+    with MetricDepthStore.open(tmp_path) as store:
+        run = store.create_run(BACKEND_DAV2, "local", {}, 7, "points=0")
+        path = store.save_artifact_atomic(run, _artifact())
+        with np.load(path, allow_pickle=False) as current:
+            values = {name: current[name] for name in current.files}
+        values["prompt_depth_z_m"] = np.ones((3, 4), dtype=np.float32)
+        values["prompt_mask"] = np.ones((3, 4), dtype=np.uint8)
+        values["metrics_json"] = np.array('{"prompt_pixel_count": 12, "prompt_spatial_coverage": 0.5, "status": "success"}')
+        np.savez_compressed(path, **values)
+        loaded = store.load_artifact(run, 2)
+        assert loaded is not None
+        assert loaded.metrics.anchor_pixel_count == 12
+        assert loaded.metrics.anchor_spatial_coverage == 0.5
+        assert not hasattr(loaded, "prompt_mask")
+
+
+def test_legacy_non_dav2_runs_are_preserved_but_ignored(tmp_path):
+    with MetricDepthStore.open(tmp_path) as store:
+        legacy = store.create_run("prompt_depth_anything", "legacy", {}, 7, "points=0")
+        with store.conn:
+            store.conn.execute(
+                "INSERT INTO depth_map_records(run_id,image_id,status,width,height,prompt_count,prompt_coverage) VALUES(?,?,?,?,?,?,?)",
+                (legacy, 2, "success", 4, 3, 12, 0.5),
+            )
+        assert store.get_run(legacy) is not None
+        assert store.latest_run_id() is None
+        assert store.latest_successful_record(2, 7) is None
+        assert store.counts(7)["completed"] == 0
 
 
 def test_gui_imports_without_importing_optional_libraries(monkeypatch):
@@ -74,6 +110,12 @@ def test_gui_tab_order_numeric_validation_progress_and_placeholder():
         window = MainWindow(root)
         assert [window.workflow_tabs.tab(i, "text") for i in range(window.workflow_tabs.index("end"))] == ["Marker BA Pipeline", "Dense Reconstruction", "Metric Depth Maps"]
         assert [window.right_tabs.tab(i, "text") for i in range(window.right_tabs.index("end"))] == ["Image Viewer", "3D Seed View", "Depth 3D View"]
+        assert not hasattr(window.metric_depth_controls, "backend_var")
+        image_display = next(child for child in window.viewer.winfo_children()[0].winfo_children() if child.winfo_class() == "TCombobox")
+        depth_color = next(child for child in window.depth_3d_viewer.winfo_children()[0].winfo_children() if child.winfo_class() == "TCombobox")
+        assert not any("Prompt" in value for value in image_display["values"])
+        assert not any("Prompt" in value for value in depth_color["values"])
+        assert not hasattr(window.depth_3d_viewer, "show_prompts_var")
         window.metric_depth_controls.inference_size_var.set("bad")
         with pytest.raises(ValueError, match="Inference size"):
             window.metric_depth_controls.config()

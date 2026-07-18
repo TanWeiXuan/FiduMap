@@ -18,6 +18,7 @@ from map_builder.initialization import PnPInitializer, build_graph_from_store, i
 from map_builder.initialization.diagnostics import format_graph_diagnostics
 from map_builder.geometry.se3 import SE3
 from map_builder.metric_depth import MetricDepthPipeline
+from map_builder.metric_depth.models import BACKEND_DAV2
 from map_builder.metric_depth.store import MetricDepthStore
 from map_builder.optimization import MapOptimizer
 from map_builder.optimization.diagnostics import format_ba_summary
@@ -118,7 +119,6 @@ class MainWindow(ttk.Frame):
         self.viewer = self.right_tabs.image_viewer
         self.map_3d_viewer = self.right_tabs.map_3d_viewer
         self.depth_3d_viewer = self.right_tabs.depth_3d_viewer
-        self.metric_depth_controls.backend_var.trace_add("write", lambda *_args: self._refresh_selected_metric_depth(force=True))
 
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 
@@ -699,7 +699,7 @@ class MainWindow(ttk.Frame):
             return
         self._metric_depth_cancel.clear()
         self.metric_depth_controls.set_running(True)
-        self.metric_depth_controls.set_status(f"Starting {config.backend} metric-depth run")
+        self.metric_depth_controls.set_status("Starting Depth Anything V2 Small aligned metric-depth run")
         self._metric_depth_thread = threading.Thread(target=self._run_metric_depth_worker, args=(scope, image_id, config), daemon=True)
         self._metric_depth_thread.start()
         self.root.after(100, self._poll_metric_depth_queue)
@@ -784,9 +784,9 @@ class MainWindow(ttk.Frame):
         selected_ready = record is not None and record.id in optimized_ids and not record.missing
         try:
             with MetricDepthStore.open(self.project_folder) as depth_store:
-                latest = depth_store.latest_run_id(self.metric_depth_controls.backend)
+                latest = depth_store.latest_run_id(BACKEND_DAV2)
                 self._latest_metric_depth_run_id = latest
-                selected_record = None if record is None else depth_store.latest_successful_record(record.id, ba_run_id, self.metric_depth_controls.backend)
+                selected_record = None if record is None else depth_store.latest_successful_record(record.id, ba_run_id, BACKEND_DAV2)
                 counts = depth_store.counts(ba_run_id)
                 counts["eligible"] = len(optimized_ids)
                 self._selected_metric_depth_run_id = None if selected_record is None else int(selected_record["run_id"])
@@ -805,10 +805,10 @@ class MainWindow(ttk.Frame):
             self.viewer.clear_metric_depth_artifact(); self.depth_3d_viewer.clear_metric_depth(); return
         try:
             with MetricDepthStore.open(self.project_folder) as depth_store:
-                row = depth_store.latest_successful_record(record.id, ba_run_id, self.metric_depth_controls.backend)
+                row = depth_store.latest_successful_record(record.id, ba_run_id, BACKEND_DAV2)
                 if row is None:
                     self.viewer.clear_metric_depth_artifact(); self.depth_3d_viewer.clear_metric_depth(); self._loaded_depth_key = None; return
-                key = (int(row["run_id"]), record.id, self.metric_depth_controls.backend)
+                key = (int(row["run_id"]), record.id, BACKEND_DAV2)
                 if not force and key == self._loaded_depth_key:
                     return
                 artifact = depth_store.load_artifact(int(row["run_id"]), record.id)

@@ -18,9 +18,9 @@ class AlignmentResult:
 
 
 def validate_anchor_coverage(mask: np.ndarray, minimum_count: int, minimum_grid_cells: int, grid_size: int = 4) -> tuple[bool, int, str | None]:
-    prompt = np.asarray(mask, dtype=bool)
-    count = int(np.count_nonzero(prompt))
-    cells = occupied_grid_cells(prompt, grid_size)
+    anchors = np.asarray(mask, dtype=bool)
+    count = int(np.count_nonzero(anchors))
+    cells = occupied_grid_cells(anchors, grid_size)
     if count < minimum_count:
         return False, cells, f"insufficient anchors: {count} < {minimum_count}"
     if cells < minimum_grid_cells:
@@ -40,30 +40,30 @@ def occupied_grid_cells(mask: np.ndarray, grid_size: int = 4) -> int:
 
 def robust_affine_inverse_depth_alignment(
     relative_prediction: np.ndarray,
-    prompt_depth_z_m: np.ndarray,
-    prompt_mask: np.ndarray,
-    prompt_confidence: np.ndarray,
+    anchor_depth_z_m: np.ndarray,
+    anchor_mask: np.ndarray,
+    anchor_confidence: np.ndarray,
     minimum_anchor_count: int,
     minimum_grid_cells: int,
     maximum_median_relative_error: float,
     max_iterations: int = 6,
 ) -> AlignmentResult:
     rel = np.asarray(relative_prediction, dtype=float)
-    prompt = np.asarray(prompt_depth_z_m, dtype=float)
-    mask = np.asarray(prompt_mask, dtype=bool)
-    weights = np.asarray(prompt_confidence, dtype=float)
+    anchor_depth = np.asarray(anchor_depth_z_m, dtype=float)
+    mask = np.asarray(anchor_mask, dtype=bool)
+    weights = np.asarray(anchor_confidence, dtype=float)
     empty = np.zeros_like(rel, dtype=np.float32)
     coverage_ok, _cells, reason = validate_anchor_coverage(mask, minimum_anchor_count, minimum_grid_cells)
     if not coverage_ok:
         return AlignmentResult(False, empty, mask & False, None, None, mask & False, None, None, reason)
-    sample_ok = mask & np.isfinite(rel) & np.isfinite(prompt) & (prompt > 0.0) & np.isfinite(weights) & (weights > 0.0)
+    sample_ok = mask & np.isfinite(rel) & np.isfinite(anchor_depth) & (anchor_depth > 0.0) & np.isfinite(weights) & (weights > 0.0)
     ys, xs = np.nonzero(sample_ok)
     if len(xs) < minimum_anchor_count:
         return AlignmentResult(False, empty, mask & False, None, None, mask & False, None, None, "too few finite model samples at anchors")
     x = rel[ys, xs]
-    y = 1.0 / prompt[ys, xs]
+    y = 1.0 / anchor_depth[ys, xs]
     w = np.clip(weights[ys, xs], 1e-3, 1.0)
-    if np.ptp(prompt[ys, xs]) <= max(1e-4, 0.01 * float(np.median(prompt[ys, xs]))):
+    if np.ptp(anchor_depth[ys, xs]) <= max(1e-4, 0.01 * float(np.median(anchor_depth[ys, xs]))):
         return AlignmentResult(False, empty, mask & False, None, None, mask & False, None, None, "anchors do not span two meaningful depth ranges")
     inliers = np.ones(len(x), dtype=bool)
     coeff = np.array([np.nan, np.nan])
@@ -96,8 +96,8 @@ def robust_affine_inverse_depth_alignment(
     z = np.zeros_like(rel, dtype=np.float32)
     z[valid] = (1.0 / inverse[valid]).astype(np.float32)
     pred_anchor = z[ys, xs]
-    absolute = np.abs(pred_anchor - prompt[ys, xs])
-    relative = absolute / prompt[ys, xs]
+    absolute = np.abs(pred_anchor - anchor_depth[ys, xs])
+    relative = absolute / anchor_depth[ys, xs]
     median_abs = float(np.median(absolute[inliers]))
     median_rel = float(np.median(relative[inliers]))
     full_inliers = np.zeros_like(mask, dtype=bool)
@@ -107,25 +107,3 @@ def robust_affine_inverse_depth_alignment(
     if median_rel > maximum_median_relative_error:
         return AlignmentResult(False, z, valid, a, b, full_inliers, median_abs, median_rel, f"alignment median relative error {median_rel:.3f} exceeds {maximum_median_relative_error:.3f}")
     return AlignmentResult(True, z, valid, a, b, full_inliers, median_abs, median_rel)
-
-
-def verify_metric_prediction(
-    prediction_z_m: np.ndarray,
-    prompt_depth_z_m: np.ndarray,
-    prompt_mask: np.ndarray,
-    maximum_anchor_error_m: float,
-    maximum_median_relative_error: float,
-) -> tuple[bool, float | None, float | None, int, str | None]:
-    pred = np.asarray(prediction_z_m, dtype=float)
-    prompt = np.asarray(prompt_depth_z_m, dtype=float)
-    valid = np.asarray(prompt_mask, dtype=bool) & np.isfinite(pred) & (pred > 0.0) & np.isfinite(prompt) & (prompt > 0.0)
-    if not np.any(valid):
-        return False, None, None, 0, "no finite predicted samples at trusted anchors"
-    absolute = np.abs(pred[valid] - prompt[valid])
-    relative = absolute / prompt[valid]
-    median_abs = float(np.median(absolute))
-    median_rel = float(np.median(relative))
-    inliers = int(np.count_nonzero((absolute <= maximum_anchor_error_m) | (relative <= maximum_median_relative_error)))
-    if median_abs > maximum_anchor_error_m or median_rel > maximum_median_relative_error:
-        return False, median_abs, median_rel, inliers, f"excessive verification error: {median_abs:.3f} m, {median_rel:.3f} relative"
-    return True, median_abs, median_rel, inliers, None
