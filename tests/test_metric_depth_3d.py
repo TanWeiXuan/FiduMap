@@ -1,26 +1,17 @@
 import numpy as np
+import pytest
 
-from map_builder.camera_models import PinholeRadTanCameraModel
-from map_builder.geometry import SE3
 from map_builder.gui.depth_3d_viewer_panel import (
+    _vtk_point_actor,
     confidence_scalars,
-    depth_to_world_point_cloud,
     orbit_camera,
     pan_camera,
     vtk_image_to_rgb,
     zoom_camera,
 )
-from map_builder.metric_depth.models import MetricDepthArtifact, MetricDepthMetrics
 
 
-def test_depth_to_world_points_and_deterministic_decimation():
-    camera = PinholeRadTanCameraModel(4, 3, 2, 2, 1.5, 1, 0, 0, 0, 0, 0)
-    ranges = np.full((3, 4), 2.0, dtype=np.float32)
-    artifact = MetricDepthArtifact(1, "fake", 4, 3, ranges.copy(), ranges, np.ones_like(ranges, bool), np.ones_like(ranges), {}, MetricDepthMetrics(status="success"))
-    a = depth_to_world_point_cloud(artifact, camera, SE3.identity(), maximum_points=5)
-    b = depth_to_world_point_cloud(artifact, camera, SE3.identity(), maximum_points=5)
-    assert a[0].shape == (5, 3)
-    assert np.array_equal(a[0], b[0])
+def test_confidence_scalars_use_red_to_green_ramp():
     assert confidence_scalars(np.array([0.0, 1.0])).tolist() == [[255, 0, 0], [0, 255, 0]]
 
 
@@ -94,3 +85,13 @@ def test_canvas_camera_orbit_pan_and_zoom_helpers():
     camera.parallel = True
     zoom_camera(camera, 2.0)
     assert camera.parallel_scale == 1.0
+
+
+def test_vtk_point_actor_uses_one_vertex_cell_per_point():
+    pytest.importorskip("vtkmodules")
+    points = np.arange(15, dtype=np.float32).reshape(5, 3)
+    colors = np.full((5, 3), 127, dtype=np.uint8)
+    actor = _vtk_point_actor(points, colors, 2.0)
+    poly = actor.GetMapper().GetInput()
+    assert poly.GetNumberOfPoints() == 5
+    assert poly.GetNumberOfVerts() == 5

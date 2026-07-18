@@ -116,6 +116,18 @@ def test_gui_tab_order_numeric_validation_progress_and_placeholder():
         assert not any("Prompt" in value for value in image_display["values"])
         assert not any("Prompt" in value for value in depth_color["values"])
         assert not hasattr(window.depth_3d_viewer, "show_prompts_var")
+        window.image_list.tree.insert("", "end", iid="1", text="one")
+        window.image_list.tree.insert("", "end", iid="2", text="two")
+        window.image_list._records = {1: "one", 2: "two"}
+        window.image_list.tree.selection_set(("1", "2"))
+        window.image_list.tree.focus("2")
+        assert window.image_list.focused_selected_record() == "two"
+        was_available = window.depth_3d_viewer.vtk_available
+        window.depth_3d_viewer.maximum_points_var.set(0)
+        window.depth_3d_viewer._request_reload()
+        assert "positive integer" in window.depth_3d_viewer.viewer_status_var.get()
+        assert window.depth_3d_viewer.vtk_available == was_available
+        window.depth_3d_viewer.maximum_points_var.set(200000)
         window.metric_depth_controls.inference_size_var.set("bad")
         with pytest.raises(ValueError, match="Inference size"):
             window.metric_depth_controls.config()
@@ -187,9 +199,121 @@ def test_depth_viewer_secondary_fallback_failure_is_nonfatal(monkeypatch):
         root.destroy()
 
 
-def test_installed_vtk_wheel_can_use_native_or_canvas_viewer():
+def test_canvas_preview_requests_are_coalesced_and_finish_full_resolution(monkeypatch):
     import tkinter as tk
     from map_builder.gui.depth_3d_viewer_panel import Depth3DViewerPanel
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("tk display unavailable")
+    try:
+        root.withdraw()
+        panel = Depth3DViewerPanel(root)
+        panel._vtk_mode = "canvas"
+        scheduled = {}
+        cancelled = []
+        rendered = []
+
+        def after(delay, callback):
+            identifier = f"after-{len(scheduled)}"
+            scheduled[identifier] = (delay, callback)
+            return identifier
+
+        monkeypatch.setattr(panel, "after", after)
+        monkeypatch.setattr(panel, "after_cancel", cancelled.append)
+        monkeypatch.setattr(panel, "_safe_present", lambda preview=False: rendered.append(preview))
+        panel._request_canvas_preview()
+        panel._request_canvas_preview()
+        assert len(scheduled) == 1
+        identifier, (delay, callback) = next(iter(scheduled.items()))
+        assert delay == 33
+        callback()
+        assert rendered == [True]
+        panel._request_canvas_full()
+        full_id = panel._canvas_full_after_id
+        assert scheduled[full_id][0] == 0
+        scheduled[full_id][1]()
+        assert rendered == [True, False]
+        assert identifier not in cancelled
+    finally:
+        root.destroy()
+
+
+def test_stale_background_depth_scene_result_is_ignored(monkeypatch):
+    from concurrent.futures import Future
+    import tkinter as tk
+    from map_builder.gui.main_window import MainWindow
+    from map_builder.metric_depth.depth_scene import DepthSceneResult
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("tk display unavailable")
+    try:
+        root.withdraw()
+        window = MainWindow(root)
+        applied = []
+        monkeypatch.setattr(window, "_apply_depth_scene_result", applied.append)
+        stale = Future(); stale.set_result(DepthSceneResult(selected_count=1))
+        current_result = DepthSceneResult(selected_count=2)
+        current = Future(); current.set_result(current_result)
+        window._depth_scene_request_id = 2
+        window._depth_scene_future = current
+        window._depth_scene_queue.put((1, stale))
+        window._depth_scene_queue.put((2, current))
+        window._poll_depth_scene_queue()
+        assert applied == [current_result]
+    finally:
+        if "window" in locals():
+            window._depth_scene_executor.shutdown(wait=False, cancel_futures=True)
+        root.destroy()
+
+
+def test_depth_scene_selection_refresh_is_debounced(monkeypatch, tmp_path):
+    import tkinter as tk
+    from map_builder.gui.main_window import MainWindow
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("tk display unavailable")
+    try:
+        root.withdraw()
+        window = MainWindow(root)
+        window.store = object()
+        window.project_folder = tmp_path
+        window.image_list.tree.insert("", "end", iid="1", text="one")
+        window.image_list.tree.selection_set("1")
+        scheduled = {}
+        cancelled = []
+
+        def after(delay, callback):
+            identifier = f"request-{len(scheduled)}"
+            scheduled[identifier] = (delay, callback)
+            return identifier
+
+        monkeypatch.setattr(root, "after", after)
+        monkeypatch.setattr(root, "after_cancel", cancelled.append)
+        window._schedule_depth_scene_refresh()
+        first = window._depth_scene_after_id
+        window._schedule_depth_scene_refresh()
+        second = window._depth_scene_after_id
+        assert first != second
+        assert first in cancelled
+        assert scheduled[second][0] == 250
+    finally:
+        if "window" in locals():
+            window._depth_scene_executor.shutdown(wait=False, cancel_futures=True)
+        root.destroy()
+
+
+def test_installed_vtk_wheel_can_use_native_or_canvas_viewer():
+    import tkinter as tk
+    from map_builder.camera_models import PinholeRadTanCameraModel
+    from map_builder.geometry import SE3
+    from map_builder.gui.depth_3d_viewer_panel import Depth3DViewerPanel
+    from map_builder.metric_depth.depth_scene import DepthCloudLayer
 
     try:
         root = tk.Tk()
@@ -203,10 +327,42 @@ def test_installed_vtk_wheel_can_use_native_or_canvas_viewer():
             pytest.skip("VTK unavailable")
         assert panel._ensure_vtk()
         assert panel._vtk_mode in {"native", "canvas"}
+        camera = PinholeRadTanCameraModel(4, 3, 2, 2, 1.5, 1, 0, 0, 0, 0, 0)
+        layers = [
+            DepthCloudLayer(
+                image_id=index,
+                source_run_id=1,
+                points_world=np.array([[index, 0, 2], [index, 1, 2]], dtype=np.float32),
+                rgb=np.full((2, 3), 100 + index, dtype=np.uint8),
+                range_m=np.full(2, 2.0, dtype=np.float32),
+                confidence=np.ones(2, dtype=np.float32),
+                T_W_C=SE3(np.eye(3), np.array([float(index), 0.0, 0.0])),
+                candidate_count=2,
+                sampled_candidate_count=2,
+            )
+            for index in (1, 2)
+        ]
+        panel.set_depth_clouds(layers, camera, selected_count=2, skipped_count=0)
+        panel.refresh()
+        point_actor = panel._point_actor
+        assert point_actor.GetMapper().GetInput().GetNumberOfPoints() == 4
+        assert panel._frustum_actor.GetMapper().GetInput().GetNumberOfLines() == 16
+        panel.color_mode_var.set("Confidence")
+        panel.point_size_var.set(3.0)
+        panel._update_presentation()
+        assert panel._point_actor is point_actor
+        assert point_actor.GetProperty().GetPointSize() == 3.0
         if panel._vtk_mode == "canvas":
-            panel._render_window.SetSize(64, 48)
+            panel._canvas_requested_size = (64, 48)
+            capture = panel._capture_filter
+            panel._present(preview=True)
+            assert panel._render_window.GetSize() == (32, 24)
+            assert panel._capture_filter is capture
             panel._present()
+            assert panel._render_window.GetSize() == (64, 48)
             assert panel._canvas_photo is not None
+        panel.clear_metric_depth()
+        assert panel._renderer.GetViewProps().GetNumberOfItems() == 0
     finally:
         if panel is not None and panel._render_window is not None:
             panel._render_window.Finalize()

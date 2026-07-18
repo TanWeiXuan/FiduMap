@@ -89,10 +89,16 @@ class ImageListPanel(ttk.Frame):
         return [int(iid) for iid in self.tree.selection()]
 
     def first_selected_record(self) -> ImageRecord | None:
+        return self.focused_selected_record()
+
+    def focused_selected_record(self) -> ImageRecord | None:
         image_ids = self.selected_image_ids()
         if not image_ids:
             return None
-        return self._records.get(image_ids[0])
+        focused = self.tree.focus()
+        focused_id = int(focused) if focused and focused.isdigit() else None
+        primary_id = focused_id if focused_id in image_ids else image_ids[0]
+        return self._records.get(primary_id)
 
     def _show_context_menu(self, event: tk.Event) -> None:
         row = self.tree.identify_row(event.y)
