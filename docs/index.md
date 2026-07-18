@@ -33,6 +33,7 @@ The map builder estimates one rigid `SE(3)` pose per marker rather than four unr
 | [Getting started](getting-started.md) | Installation, GUI launch, test command, and common dependency notes. |
 | [Map builder architecture](map-builder.md) | Main package design, workflow, coordinate conventions, output format, and subpackage responsibilities. |
 | [Dense reconstruction](dense-reconstruction.md) | Experimental semi-dense matching and point-cloud reconstruction pipeline. |
+| [Metric depth maps](metric-depth.md) | Optional offline DAV2 alignment and PromptDA metric-depth workflow, storage, export, and viewers. |
 | [Repository components](repository-components.md) | Tests, vendored assets, example data, helper scripts, and repository-level folders. |
 | [Runtime localisation direction](runtime-localisation.md) | Intended future localiser workflow that consumes exported marker maps. |
 | [Future plans and notes](future-plans.md) | Incomplete features, known risks, critical bug watchlist, and contribution notes. |

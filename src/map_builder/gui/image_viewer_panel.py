@@ -7,6 +7,8 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Any
 
+import numpy as np
+
 from map_builder.project.models import MarkerDetection
 
 
@@ -19,7 +21,7 @@ class ImageViewerPanel(ttk.Frame):
         super().__init__(master, **kwargs)
         controls = ttk.Frame(self)
         controls.grid(row=0, column=0, sticky="ew", padx=6, pady=4)
-        controls.columnconfigure(2, weight=1)
+        controls.columnconfigure(4, weight=1)
         self.show_markers_var = tk.BooleanVar(value=True)
         self.show_xfeat_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(controls, text="Show markers", variable=self.show_markers_var, command=self._render).grid(
@@ -28,6 +30,20 @@ class ImageViewerPanel(ttk.Frame):
         ttk.Checkbutton(controls, text="Show XFeat keypoints", variable=self.show_xfeat_var, command=self._render).grid(
             row=0, column=1, sticky="w"
         )
+        self.display_mode_var = tk.StringVar(value="RGB")
+        ttk.Label(controls, text="Display").grid(row=0, column=2, sticky="e", padx=(12, 4))
+        ttk.Combobox(
+            controls,
+            textvariable=self.display_mode_var,
+            values=["RGB", "Metric range", "Camera Z-depth", "Confidence", "Prompt depth", "RGB + metric range overlay"],
+            state="readonly",
+            width=28,
+        ).grid(row=0, column=3, sticky="w")
+        self.display_mode_var.trace_add("write", lambda *_args: self._render())
+        self.depth_limits_var = tk.StringVar(value="")
+        ttk.Label(controls, textvariable=self.depth_limits_var).grid(row=0, column=4, sticky="e", padx=6)
+        self.pixel_readout_var = tk.StringVar(value="")
+        ttk.Label(controls, textvariable=self.pixel_readout_var, anchor="w").grid(row=1, column=0, columnspan=5, sticky="ew")
         self.canvas = tk.Canvas(self, bg="#f2f2f2", highlightthickness=0)
         self.canvas.grid(row=1, column=0, sticky="nsew")
         self.columnconfigure(0, weight=1)
@@ -37,6 +53,7 @@ class ImageViewerPanel(ttk.Frame):
         self._current_detections: list[MarkerDetection] = []
         self._xfeat_keypoints = None
         self._source_bgr: Any | None = None
+        self._metric_depth_artifact: Any | None = None
         self._fit_scale = 1.0
         self._zoom = 1.0
         self._offset_x = 0.0
@@ -52,6 +69,7 @@ class ImageViewerPanel(ttk.Frame):
         self.canvas.bind("<Button-4>", self._on_mouse_wheel)
         self.canvas.bind("<Button-5>", self._on_mouse_wheel)
         self.canvas.bind("<Double-Button-1>", lambda _event: self.reset_view())
+        self.canvas.bind("<Motion>", self._on_mouse_motion)
         self.show_placeholder("No image selected")
 
     def show_placeholder(self, text: str) -> None:
@@ -80,6 +98,16 @@ class ImageViewerPanel(ttk.Frame):
 
     def set_xfeat_keypoints(self, keypoints: Any | None) -> None:
         self._xfeat_keypoints = keypoints
+        self._render()
+
+    def set_metric_depth_artifact(self, artifact: Any) -> None:
+        self._metric_depth_artifact = artifact
+        self._render()
+
+    def clear_metric_depth_artifact(self) -> None:
+        self._metric_depth_artifact = None
+        self.depth_limits_var.set("")
+        self.pixel_readout_var.set("")
         self._render()
 
     def reset_view(self) -> None:
@@ -144,12 +172,45 @@ class ImageViewerPanel(ttk.Frame):
         self._offset_y = event.y - image_y * new_scale
         self._render()
 
+    def _on_mouse_motion(self, event: tk.Event) -> None:
+        artifact = self._metric_depth_artifact
+        if artifact is None or self._source_bgr is None:
+            self.pixel_readout_var.set("")
+            return
+        scale = self._scale()
+        u = int((event.x - self._offset_x) / scale)
+        v = int((event.y - self._offset_y) / scale)
+        if not (0 <= u < artifact.width and 0 <= v < artifact.height):
+            self.pixel_readout_var.set("")
+            return
+        z = float(artifact.z_depth_m[v, u])
+        radial = float(artifact.range_m[v, u])
+        confidence = float(artifact.confidence[v, u])
+        prompt = bool(artifact.prompt_mask[v, u])
+        valid = bool(artifact.valid_mask[v, u])
+        self.pixel_readout_var.set(
+            f"u={u}, v={v}  Z={'%.3f m' % z if valid else 'invalid'}  range={'%.3f m' % radial if valid else 'invalid'}  "
+            f"confidence={confidence:.3f}  prompt={'yes' if prompt else 'no'}  backend={artifact.backend}"
+        )
+
     def _render(self) -> None:
         if self._source_bgr is None:
             return
+        mode = self.display_mode_var.get()
+        if mode != "RGB" and self._metric_depth_artifact is None:
+            self.canvas.delete("all")
+            self.canvas.create_text(max(self.canvas.winfo_width() // 2, 220), max(self.canvas.winfo_height() // 2, 160), text="No successful non-stale metric depth map for this image", fill="#555555")
+            self.depth_limits_var.set("")
+            return
         self._clamp_offsets()
         scale = self._scale()
-        photo = _render_photo(self._source_bgr, scale, self._current_detections, self._xfeat_keypoints, bool(self.show_markers_var.get()), bool(self.show_xfeat_var.get()))
+        display_bgr = self._source_bgr
+        if mode != "RGB" and self._metric_depth_artifact is not None:
+            display_bgr, limits = render_depth_display(self._source_bgr, self._metric_depth_artifact, mode)
+            self.depth_limits_var.set(limits)
+        else:
+            self.depth_limits_var.set("")
+        photo = _render_photo(display_bgr, scale, self._current_detections, self._xfeat_keypoints, bool(self.show_markers_var.get()), bool(self.show_xfeat_var.get()))
         self._photo = photo
         self.canvas.delete("all")
         self.canvas.create_image(round(self._offset_x), round(self._offset_y), image=photo, anchor="nw")
@@ -272,3 +333,45 @@ def _draw_xfeat(cv2: Any, image: Any, keypoints: Any, scale: float) -> None:
         idx=np.linspace(0,len(pts)-1,5000,dtype=int); pts=pts[idx]
     for u,v in pts[:, :2]:
         cv2.circle(image,(int(round(u*scale)),int(round(v*scale))),1,(20,220,20),-1)
+
+
+def render_depth_display(rgb_source_bgr: Any, artifact: Any, mode: str) -> tuple[np.ndarray, str]:
+    """Render a deterministic visualization without modifying metric arrays."""
+    import cv2
+
+    source = np.asarray(rgb_source_bgr, dtype=np.uint8)
+    if mode == "Metric range" or mode == "RGB + metric range overlay":
+        values = np.asarray(artifact.range_m, dtype=float)
+        valid = np.asarray(artifact.valid_mask, dtype=bool)
+        unit = "m range"
+    elif mode == "Camera Z-depth":
+        values = np.asarray(artifact.z_depth_m, dtype=float)
+        valid = np.asarray(artifact.valid_mask, dtype=bool)
+        unit = "m Z"
+    elif mode == "Confidence":
+        values = np.asarray(artifact.confidence, dtype=float)
+        valid = np.asarray(artifact.valid_mask, dtype=bool)
+        unit = "confidence"
+    elif mode == "Prompt depth":
+        values = np.asarray(artifact.prompt_depth_z_m, dtype=float)
+        valid = np.asarray(artifact.prompt_mask, dtype=bool)
+        unit = "m prompt Z"
+    else:
+        return source.copy(), ""
+    valid = valid & np.isfinite(values)
+    if mode != "Confidence":
+        valid &= values > 0.0
+    if not np.any(valid):
+        rendered = np.full_like(source, (48, 48, 48))
+        return rendered, "no valid values"
+    lo, hi = (0.0, 1.0) if mode == "Confidence" else tuple(float(v) for v in np.percentile(values[valid], [2.0, 98.0]))
+    if hi <= lo:
+        hi = lo + 1e-6
+    normalized = np.zeros(values.shape, dtype=np.uint8)
+    normalized[valid] = np.clip((values[valid] - lo) * 255.0 / (hi - lo), 0, 255).astype(np.uint8)
+    colored = cv2.applyColorMap(normalized, cv2.COLORMAP_TURBO)
+    colored[~valid] = (48, 48, 48)
+    if mode == "RGB + metric range overlay":
+        colored = cv2.addWeighted(source, 0.45, colored, 0.55, 0.0)
+        colored[~valid] = source[~valid]
+    return colored, f"{lo:.3f}–{hi:.3f} {unit}"

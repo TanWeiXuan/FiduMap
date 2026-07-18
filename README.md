@@ -12,6 +12,7 @@ Detailed documentation now lives in the [`docs`](docs/index.md) folder.
 | [Getting started](docs/getting-started.md) | Installation, GUI launch, test command, and dependency notes. |
 | [Map builder architecture](docs/map-builder.md) | Workflow, coordinate conventions, output format, and package responsibilities. |
 | [Dense reconstruction](docs/dense-reconstruction.md) | Experimental semi-dense matching and point-cloud reconstruction notes. |
+| [Metric depth maps](docs/metric-depth.md) | Optional offline metric-depth generation, verification, viewing, and export. |
 | [Repository components](docs/repository-components.md) | Tests, example data, vendored assets, helper scripts, and support folders. |
 | [Runtime localisation direction](docs/runtime-localisation.md) | Planned runtime localisation workflow that consumes exported marker maps. |
 | [Future plans and notes](docs/future-plans.md) | Incomplete features, critical bug watchlist, and contribution notes. |

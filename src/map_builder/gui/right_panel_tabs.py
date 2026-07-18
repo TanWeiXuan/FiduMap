@@ -7,6 +7,7 @@ from tkinter import ttk
 
 from .image_viewer_panel import ImageViewerPanel
 from .map_3d_viewer_panel import Map3DViewerPanel
+from .depth_3d_viewer_panel import Depth3DViewerPanel
 
 
 class RightPanelTabs(ttk.Notebook):
@@ -14,10 +15,14 @@ class RightPanelTabs(ttk.Notebook):
         super().__init__(master, **kwargs)
         self.image_viewer = ImageViewerPanel(self)
         self.map_3d_viewer = Map3DViewerPanel(self)
+        self.depth_3d_viewer = Depth3DViewerPanel(self)
         self.add(self.image_viewer, text="Image Viewer")
         self.add(self.map_3d_viewer, text="3D Seed View")
+        self.add(self.depth_3d_viewer, text="Depth 3D View")
         self.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
     def _on_tab_changed(self, _event: tk.Event) -> None:
         if self.select() == str(self.map_3d_viewer):
             self.map_3d_viewer.on_tab_visible()
+        elif self.select() == str(self.depth_3d_viewer):
+            self.depth_3d_viewer.on_tab_visible()

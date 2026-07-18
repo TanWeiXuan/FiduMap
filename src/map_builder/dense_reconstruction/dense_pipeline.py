@@ -491,7 +491,7 @@ def _matching_details(
     else:
         per_pair = "; per-pair matches min/median/max = 0/0/0"
     parts = [
-        f"Matched {matched_pairs} pair(s), {raw_matches:,} refined matches{per_pair}",
+        f"Matched {matched_pairs} pair(s), {raw_matches:,} raw matches{per_pair}",
         f"processed {processed_pairs}/{total_candidate_pairs} candidate pair(s)",
         f"zero-match pairs {no_match_pairs}",
         f"skipped {skipped_pairs} incompatible/missing pair(s)",

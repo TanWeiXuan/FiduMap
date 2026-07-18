@@ -16,12 +16,16 @@ from map_builder.detection import DetectionRunner
 from map_builder.export import export_optimized_marker_map_csv
 from map_builder.initialization import PnPInitializer, build_graph_from_store, initialize_seed_poses_from_store
 from map_builder.initialization.diagnostics import format_graph_diagnostics
+from map_builder.geometry.se3 import SE3
+from map_builder.metric_depth import MetricDepthPipeline
+from map_builder.metric_depth.store import MetricDepthStore
 from map_builder.optimization import MapOptimizer
 from map_builder.optimization.diagnostics import format_ba_summary
 from map_builder.project import BAConfig, DetectorRunConfig, ImageIndexer, ProjectStore
 
 from .control_panel import ControlPanel
 from .dense_control_panel import DenseControlPanel
+from .metric_depth_control_panel import MetricDepthControlPanel
 from .image_list_panel import ImageListPanel
 from .menu_bar import create_menu_bar
 from .right_panel_tabs import RightPanelTabs
@@ -45,6 +49,12 @@ class MainWindow(ttk.Frame):
         self._ba_thread: threading.Thread | None = None
         self._dense_queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self._dense_thread: threading.Thread | None = None
+        self._metric_depth_queue: queue.Queue[tuple[str, object]] = queue.Queue()
+        self._metric_depth_thread: threading.Thread | None = None
+        self._metric_depth_cancel = threading.Event()
+        self._latest_metric_depth_run_id: int | None = None
+        self._selected_metric_depth_run_id: int | None = None
+        self._loaded_depth_key: tuple[int, int, str] | None = None
 
         self.root.title("Fiducial Map Builder")
         self.root.geometry("1180x760")
@@ -91,6 +101,15 @@ class MainWindow(ttk.Frame):
         )
         self.workflow_tabs.add(self.controls, text="Marker BA Pipeline")
         self.workflow_tabs.add(self.dense_controls, text="Dense Reconstruction")
+        self.metric_depth_controls = MetricDepthControlPanel(
+            self.workflow_tabs,
+            generate_selected=self.run_metric_depth_selected,
+            generate_all=self.run_metric_depth_all,
+            cancel=self.cancel_metric_depth,
+            export_selected=self.export_metric_depth_selected,
+            export_run=self.export_metric_depth_run,
+        )
+        self.workflow_tabs.add(self.metric_depth_controls, text="Metric Depth Maps")
         self.left_pane.add(self.image_list, weight=3)
         self.left_pane.add(self.workflow_tabs, weight=2)
 
@@ -98,6 +117,8 @@ class MainWindow(ttk.Frame):
         self.right_tabs.grid(row=0, column=1, sticky="nsew")
         self.viewer = self.right_tabs.image_viewer
         self.map_3d_viewer = self.right_tabs.map_3d_viewer
+        self.depth_3d_viewer = self.right_tabs.depth_3d_viewer
+        self.metric_depth_controls.backend_var.trace_add("write", lambda *_args: self._refresh_selected_metric_depth(force=True))
 
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 
@@ -142,8 +163,10 @@ class MainWindow(ttk.Frame):
             )
             self.map_3d_viewer.set_project(self.project_folder, self.store)
             self.dense_controls.set_project(self.project_folder)
+            self._loaded_depth_key = None
             self._refresh_dense_counts()
             self._refresh_dense_prerequisite_status()
+            self._refresh_metric_depth_status()
             self.refresh_index()
             self._load_default_or_existing_camera_config()
             self._update_path_display()
@@ -207,15 +230,22 @@ class MainWindow(ttk.Frame):
         if record is None:
             self.viewer.show_placeholder("No image selected")
             self.viewer.set_xfeat_keypoints(None)
+            self.viewer.clear_metric_depth_artifact()
+            self.depth_3d_viewer.clear_metric_depth()
+            self._refresh_metric_depth_status()
             return
         if record.missing:
             self.viewer.show_placeholder(f"Missing image: {record.rel_path}")
             self.viewer.set_xfeat_keypoints(None)
+            self.viewer.clear_metric_depth_artifact()
+            self.depth_3d_viewer.clear_metric_depth()
             return
         detections = self.store.get_detections_for_image(record.id)
         self.viewer.show_image(record.absolute_path(self.project_folder), detections)
         self._load_selected_xfeat_keypoints(record.id)
         self.map_3d_viewer.set_selected_image_id(record.id)
+        self._refresh_selected_metric_depth()
+        self._refresh_metric_depth_status()
 
     def run_detection(self) -> None:
         if self.store is None or self.project_folder is None:
@@ -480,6 +510,7 @@ class MainWindow(ttk.Frame):
                 self.controls.set_ba_running(False)
                 self.controls.set_ba_status(format_ba_summary(payload))  # type: ignore[arg-type]
                 self._refresh_dense_prerequisite_status()
+                self._refresh_metric_depth_status()
                 self.map_3d_viewer.request_refresh()
             elif kind == "error":
                 self.controls.set_ba_running(False)
@@ -645,6 +676,164 @@ class MainWindow(ttk.Frame):
         except Exception:
             self.viewer.set_xfeat_keypoints(None)
 
+    def run_metric_depth_selected(self) -> None:
+        record = self.image_list.first_selected_record()
+        if record is None:
+            self.metric_depth_controls.set_status("Select an optimized image first.")
+            return
+        self._start_metric_depth("selected", record.id)
+
+    def run_metric_depth_all(self) -> None:
+        self._start_metric_depth("all", None)
+
+    def _start_metric_depth(self, scope: str, image_id: int | None) -> None:
+        if self.project_folder is None or self.store is None:
+            self.metric_depth_controls.set_status("Choose an image folder first.")
+            return
+        if self._metric_depth_thread is not None and self._metric_depth_thread.is_alive():
+            return
+        try:
+            config = self.metric_depth_controls.config()
+        except ValueError as exc:
+            self.metric_depth_controls.set_status(f"Cannot generate metric depth: {exc}")
+            return
+        self._metric_depth_cancel.clear()
+        self.metric_depth_controls.set_running(True)
+        self.metric_depth_controls.set_status(f"Starting {config.backend} metric-depth run")
+        self._metric_depth_thread = threading.Thread(target=self._run_metric_depth_worker, args=(scope, image_id, config), daemon=True)
+        self._metric_depth_thread.start()
+        self.root.after(100, self._poll_metric_depth_queue)
+
+    def _run_metric_depth_worker(self, scope: str, image_id: int | None, config: object) -> None:
+        assert self.project_folder is not None
+        pipeline: MetricDepthPipeline | None = None
+        try:
+            pipeline = MetricDepthPipeline(self.project_folder)
+            progress = lambda event: self._metric_depth_queue.put(("progress", event))
+            summary = pipeline.run_all(config, progress, self._metric_depth_cancel) if scope == "all" else pipeline.run_image(int(image_id), config, progress, self._metric_depth_cancel)
+            self._metric_depth_queue.put(("done", summary))
+        except Exception as exc:
+            self._metric_depth_queue.put(("error", str(exc)))
+        finally:
+            if pipeline is not None:
+                pipeline.close()
+
+    def _poll_metric_depth_queue(self) -> None:
+        keep_polling = self._metric_depth_thread is not None and self._metric_depth_thread.is_alive()
+        while True:
+            try:
+                kind, payload = self._metric_depth_queue.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "progress":
+                self.metric_depth_controls.set_progress(payload)  # type: ignore[arg-type]
+            elif kind == "done":
+                self.metric_depth_controls.set_running(False)
+                self._latest_metric_depth_run_id = int(getattr(payload, "run_id"))
+                self.metric_depth_controls.set_status(str(getattr(payload, "details", payload)))
+                self._refresh_metric_depth_status()
+                self._refresh_selected_metric_depth(force=True)
+                self.depth_3d_viewer.request_refresh()
+            elif kind == "error":
+                self.metric_depth_controls.set_running(False)
+                self.metric_depth_controls.set_status(str(payload))
+                self._refresh_metric_depth_status()
+                messagebox.showerror("Metric Depth Failed", str(payload))
+        if keep_polling:
+            self.root.after(100, self._poll_metric_depth_queue)
+
+    def cancel_metric_depth(self) -> None:
+        self._metric_depth_cancel.set()
+        self.metric_depth_controls.set_status("Cancellation requested; the current model forward pass will finish first.")
+
+    def export_metric_depth_selected(self) -> None:
+        record = self.image_list.first_selected_record()
+        if record is None or self._selected_metric_depth_run_id is None:
+            return
+        folder = filedialog.askdirectory(title="Export selected metric depth map")
+        if not folder or self.project_folder is None:
+            return
+        try:
+            with MetricDepthPipeline(self.project_folder) as pipeline:
+                pipeline.export_image(record.id, self._selected_metric_depth_run_id, Path(folder))
+            self.metric_depth_controls.set_status(f"Exported metric depth for image {record.id}.")
+        except Exception as exc:
+            messagebox.showerror("Metric Depth Export Failed", str(exc))
+
+    def export_metric_depth_run(self) -> None:
+        if self._latest_metric_depth_run_id is None or self.project_folder is None:
+            return
+        folder = filedialog.askdirectory(title="Export current metric depth run")
+        if not folder:
+            return
+        try:
+            with MetricDepthPipeline(self.project_folder) as pipeline:
+                exported = pipeline.export_all(self._latest_metric_depth_run_id, Path(folder))
+            self.metric_depth_controls.set_status(f"Exported {len(exported)} metric depth map(s).")
+        except Exception as exc:
+            messagebox.showerror("Metric Depth Export Failed", str(exc))
+
+    def _refresh_metric_depth_status(self) -> None:
+        if self.store is None or self.project_folder is None:
+            self.metric_depth_controls.set_prerequisites(False, False)
+            self.metric_depth_controls.set_summary(None)
+            return
+        ba_run_id = self.store.get_latest_successful_ba_run_id()
+        optimized_ids = {pose.image_id for pose in self.store.get_optimized_camera_poses(ba_run_id)}
+        record = self.image_list.first_selected_record()
+        selected_ready = record is not None and record.id in optimized_ids and not record.missing
+        try:
+            with MetricDepthStore.open(self.project_folder) as depth_store:
+                latest = depth_store.latest_run_id(self.metric_depth_controls.backend)
+                self._latest_metric_depth_run_id = latest
+                selected_record = None if record is None else depth_store.latest_successful_record(record.id, ba_run_id, self.metric_depth_controls.backend)
+                counts = depth_store.counts(ba_run_id)
+                counts["eligible"] = len(optimized_ids)
+                self._selected_metric_depth_run_id = None if selected_record is None else int(selected_record["run_id"])
+            self.metric_depth_controls.set_summary(counts, latest)
+            self.metric_depth_controls.set_prerequisites(ba_run_id is not None and bool(optimized_ids), selected_ready, selected_record is not None, latest is not None)
+        except Exception as exc:
+            self.metric_depth_controls.set_status(f"Metric-depth store unavailable: {exc}")
+            self.metric_depth_controls.set_prerequisites(ba_run_id is not None, selected_ready)
+
+    def _refresh_selected_metric_depth(self, force: bool = False) -> None:
+        if self.store is None or self.project_folder is None:
+            return
+        record = self.image_list.first_selected_record()
+        ba_run_id = self.store.get_latest_successful_ba_run_id()
+        if record is None or ba_run_id is None:
+            self.viewer.clear_metric_depth_artifact(); self.depth_3d_viewer.clear_metric_depth(); return
+        try:
+            with MetricDepthStore.open(self.project_folder) as depth_store:
+                row = depth_store.latest_successful_record(record.id, ba_run_id, self.metric_depth_controls.backend)
+                if row is None:
+                    self.viewer.clear_metric_depth_artifact(); self.depth_3d_viewer.clear_metric_depth(); self._loaded_depth_key = None; return
+                key = (int(row["run_id"]), record.id, self.metric_depth_controls.backend)
+                if not force and key == self._loaded_depth_key:
+                    return
+                artifact = depth_store.load_artifact(int(row["run_id"]), record.id)
+                self._selected_metric_depth_run_id = int(row["run_id"])
+            if artifact is None:
+                self.viewer.clear_metric_depth_artifact(); self.depth_3d_viewer.clear_metric_depth(); return
+            pose = next((pose for pose in self.store.get_optimized_camera_poses(ba_run_id) if pose.image_id == record.id), None)
+            if pose is None or self.camera_model is None:
+                self.viewer.clear_metric_depth_artifact(); self.depth_3d_viewer.clear_metric_depth(); return
+            self.viewer.set_metric_depth_artifact(artifact)
+            rgb = None
+            if getattr(self.viewer, "_source_bgr", None) is not None:
+                rgb = self.viewer._source_bgr[:, :, ::-1].copy()
+            self.depth_3d_viewer.set_metric_depth(artifact, self.camera_model, SE3.from_json_dict(pose.T_W_C), rgb)
+            try:
+                with DenseReconstructionStore.open(self.project_folder) as dense_store:
+                    dense_points = dense_store.list_active_dense_points()
+            except Exception:
+                dense_points = []
+            self.depth_3d_viewer.set_scene_context(self.store.get_optimized_marker_poses(ba_run_id), self.store.get_marker_size_m(), dense_points)
+            self._loaded_depth_key = key
+        except Exception as exc:
+            self.viewer.clear_metric_depth_artifact(); self.depth_3d_viewer.clear_metric_depth()
+            self.metric_depth_controls.set_status(f"Could not load metric-depth artifact: {exc}")
+
     def _load_default_or_existing_camera_config(self) -> None:
         if self.store is None or self.project_folder is None:
             return
@@ -668,6 +857,7 @@ class MainWindow(ttk.Frame):
         self.controls.set_paths(folder_text, camera_text)
 
     def close(self) -> None:
+        self._metric_depth_cancel.set()
         if self.store is not None:
             self.store.close()
             self.store = None

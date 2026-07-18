@@ -18,7 +18,8 @@ The `tests` directory covers the current map builder implementation. Coverage in
 - synthetic bundle adjustment;
 - CSV export;
 - GUI imports and map viewer logic;
-- dense reconstruction availability, metadata, matching, pair selection, triangulation, export, and duplicate merging checks.
+- dense reconstruction availability, metadata, matching, pair selection, triangulation, export, and duplicate merging checks;
+- metric-depth prompt geometry, alignment, verification, sidecar storage/export, pipeline, deterministic rendering, and optional-dependency imports.
 
 Run the suite with:
 
@@ -40,6 +41,8 @@ pytest -q
 |---|---|
 | `vendor/azure_ttk_theme` | Tkinter theme files used by the GUI. |
 | `vendor/xfeat` | Vendored semi-dense feature extraction/matching code and model weights used by dense reconstruction. |
+
+Metric-depth model weights and VTK are not vendored. They are optional user-installed dependencies described in [Metric depth maps](metric-depth.md).
 
 ## Miscellaneous folder
 

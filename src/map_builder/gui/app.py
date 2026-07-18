@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import logging
 import sys
 import tkinter as tk
 
@@ -16,6 +17,7 @@ else:
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     root = tk.Tk()
     load_azure_theme(root, mode="light")
     window = MainWindow(root)
