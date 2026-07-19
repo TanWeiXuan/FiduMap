@@ -35,7 +35,11 @@ class ImageViewerPanel(ttk.Frame):
         ttk.Combobox(
             controls,
             textvariable=self.display_mode_var,
-            values=["RGB", "Metric range", "Camera Z-depth", "Confidence", "RGB + metric range overlay"],
+            values=[
+                "RGB", "Metric range", "Camera Z-depth", "Confidence", "RGB + metric range overlay",
+                "Global spline depth", "Spatial correction", "Final aligned depth", "Anchor residual",
+                "Anchor split", "Spline extrapolation",
+            ],
             state="readonly",
             width=28,
         ).grid(row=0, column=3, sticky="w")
@@ -187,10 +191,29 @@ class ImageViewerPanel(ttk.Frame):
         radial = float(artifact.range_m[v, u])
         confidence = float(artifact.confidence[v, u])
         valid = bool(artifact.valid_mask[v, u])
-        self.pixel_readout_var.set(
+        details = [
             f"u={u}, v={v}  Z={'%.3f m' % z if valid else 'invalid'}  range={'%.3f m' % radial if valid else 'invalid'}  "
             f"confidence={confidence:.3f}  backend={artifact.backend}"
-        )
+        ]
+        prediction = getattr(artifact, "dav2_prediction", None)
+        global_depth = getattr(artifact, "global_spline_z_depth_m", None)
+        correction = getattr(artifact, "spatial_log_correction", None)
+        extrapolation = getattr(artifact, "alignment_extrapolation_mask", None)
+        split = getattr(artifact, "anchor_split", None)
+        residual = getattr(artifact, "anchor_residual_m", None)
+        if prediction is not None:
+            details.append(f"DAV2={float(prediction[v, u]):.4f}")
+        if global_depth is not None:
+            details.append(f"global Z={float(global_depth[v, u]):.3f} m")
+        if correction is not None:
+            details.append(f"spatial log correction={float(correction[v, u]):+.4f}")
+        if extrapolation is not None:
+            details.append("outside spline range" if bool(extrapolation[v, u]) else "inside spline range")
+        if split is not None:
+            details.append({0: "not an anchor", 1: "training anchor", 2: "holdout anchor"}.get(int(split[v, u]), "invalid anchor"))
+        if residual is not None and np.isfinite(residual[v, u]):
+            details.append(f"anchor residual={float(residual[v, u]):+.3f} m")
+        self.pixel_readout_var.set("  ".join(details))
 
     def _render(self) -> None:
         if self._source_bgr is None:
@@ -334,6 +357,22 @@ def _draw_xfeat(cv2: Any, image: Any, keypoints: Any, scale: float) -> None:
         cv2.circle(image,(int(round(u*scale)),int(round(v*scale))),1,(20,220,20),-1)
 
 
+def _render_diverging(values: np.ndarray, valid: np.ndarray, source_shape: tuple[int, ...]) -> np.ndarray:
+    rendered = np.full(source_shape, (48, 48, 48), dtype=np.uint8)
+    if not np.any(valid):
+        return rendered
+    limit = max(float(np.percentile(np.abs(values[valid]), 98.0)), 1e-9)
+    normalized = np.clip(values / limit, -1.0, 1.0)
+    negative = valid & (normalized < 0.0)
+    positive = valid & ~negative
+    strength = np.abs(normalized)
+    for channel in range(3):
+        rendered[..., channel][valid] = np.asarray(255.0 * (1.0 - strength[valid]), dtype=np.uint8)
+    rendered[..., 0][negative] = 255
+    rendered[..., 2][positive] = 255
+    return rendered
+
+
 def render_depth_display(rgb_source_bgr: Any, artifact: Any, mode: str) -> tuple[np.ndarray, str]:
     """Render a deterministic visualization without modifying metric arrays."""
     import cv2
@@ -351,6 +390,46 @@ def render_depth_display(rgb_source_bgr: Any, artifact: Any, mode: str) -> tuple
         values = np.asarray(artifact.confidence, dtype=float)
         valid = np.asarray(artifact.valid_mask, dtype=bool)
         unit = "confidence"
+    elif mode == "Global spline depth":
+        values = getattr(artifact, "global_spline_z_depth_m", None)
+        if values is None:
+            return source.copy(), "unavailable in this artifact"
+        values = np.asarray(values, dtype=float)
+        valid = np.isfinite(values) & (values > 0.0)
+        unit = "m global Z"
+    elif mode == "Final aligned depth":
+        values = np.asarray(artifact.z_depth_m, dtype=float)
+        valid = np.asarray(artifact.valid_mask, dtype=bool)
+        unit = "m final Z"
+    elif mode == "Spatial correction":
+        values = getattr(artifact, "spatial_log_correction", None)
+        if values is None:
+            return source.copy(), "unavailable in this artifact"
+        values = np.asarray(values, dtype=float)
+        return _render_diverging(values, np.isfinite(values), source.shape), "spatial log-depth correction (zero centered)"
+    elif mode == "Anchor residual":
+        values = getattr(artifact, "anchor_residual_m", None)
+        if values is None:
+            return source.copy(), "unavailable in this artifact"
+        values = np.asarray(values, dtype=float)
+        return _render_diverging(values, np.isfinite(values), source.shape), "sparse anchor residual m (zero centered)"
+    elif mode == "Anchor split":
+        split = getattr(artifact, "anchor_split", None)
+        if split is None:
+            return source.copy(), "unavailable in this artifact"
+        split = np.asarray(split, dtype=np.uint8)
+        rendered = np.full_like(source, (48, 48, 48))
+        rendered[split == 1] = (40, 210, 40)
+        rendered[split == 2] = (40, 160, 240)
+        return rendered, "green training; orange holdout; gray unused"
+    elif mode == "Spline extrapolation":
+        extrapolated = getattr(artifact, "alignment_extrapolation_mask", None)
+        if extrapolated is None:
+            return source.copy(), "unavailable in this artifact"
+        extrapolated = np.asarray(extrapolated, dtype=bool)
+        rendered = np.full_like(source, (40, 150, 40))
+        rendered[extrapolated] = (30, 30, 230)
+        return rendered, "green inside; red outside spline range"
     else:
         return source.copy(), ""
     valid = valid & np.isfinite(values)

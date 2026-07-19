@@ -29,6 +29,33 @@ def test_atomic_npz_and_metadata_round_trip_and_staleness(tmp_path):
         assert store.counts(8)["stale"] == 1
 
 
+def test_spline_diagnostic_arrays_round_trip_and_old_standard_only_artifact_loads(tmp_path):
+    artifact = _artifact()
+    shape = artifact.z_depth_m.shape
+    artifact.global_spline_z_depth_m = np.full(shape, 1.9, np.float32)
+    artifact.spatial_log_correction = np.full(shape, 0.02, np.float32)
+    artifact.alignment_extrapolation_mask = np.zeros(shape, bool)
+    artifact.anchor_mask = np.eye(shape[0], shape[1], dtype=bool)
+    artifact.anchor_residual_m = np.full(shape, np.nan, np.float32)
+    artifact.anchor_split = np.zeros(shape, np.uint8)
+    artifact.dav2_prediction = np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
+    with MetricDepthStore.open(tmp_path) as store:
+        run = store.create_run(BACKEND_DAV2, "local", {}, 7, "points=0")
+        path = store.save_artifact_atomic(run, artifact)
+        loaded = store.load_artifact(run, artifact.image_id)
+        assert loaded is not None
+        assert np.allclose(loaded.global_spline_z_depth_m, 1.9)
+        assert np.array_equal(loaded.anchor_split, artifact.anchor_split)
+        assert loaded.metadata["artifact_schema_version"] == 2
+
+        with np.load(path, allow_pickle=False) as current:
+            standard = {name: current[name] for name in ("z_depth_m", "range_m", "valid_mask", "confidence")}
+        np.savez_compressed(path, **standard)
+        legacy = store.load_artifact(run, artifact.image_id)
+        assert legacy is not None and legacy.global_spline_z_depth_m is None
+        assert legacy.metadata["artifact_schema_version"] == 1
+
+
 def test_portable_uint16_export_and_overflow_warning(tmp_path):
     artifact = _artifact(distance=2.345)
     paths = export_artifact(artifact, tmp_path)

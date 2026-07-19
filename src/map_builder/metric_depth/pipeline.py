@@ -100,7 +100,7 @@ class MetricDepthPipeline:
                 artifact.metrics.processing_duration_s = time.perf_counter() - started
                 if artifact.metrics.status != "success":
                     raise RuntimeError(artifact.metrics.error_message or "backend rejected output as non-metric")
-                self._emit(progress, "saving_artifact", f"Image {index}/{len(image_ids)} — saving artifact", index, len(image_ids), image_id, index / len(image_ids))
+                self._emit(progress, "saving_artifact", f"Image {index}/{len(image_ids)} — Saving aligned depth artifact", index, len(image_ids), image_id, index / len(image_ids))
                 self.store.save_artifact_atomic(run_id, artifact)
                 summary.completed += 1
                 durations.append(artifact.metrics.processing_duration_s)
@@ -146,19 +146,28 @@ class MetricDepthPipeline:
         if (camera.image_width, camera.image_height) != (w, h):
             raise StageError("loading_image", f"invalid camera geometry: camera is {camera.image_width}x{camera.image_height}, image is {w}x{h}")
         self._check_cancel(cancel_event)
-        self._emit(progress, "building_anchors", f"Image {index}/{total} — building metric alignment anchors", index, total, image_id, (index - 0.7) / total)
+        self._emit(progress, "building_anchors", f"Image {index}/{total} — Building balanced metric anchors", index, total, image_id, (index - 0.7) / total)
         T_W_C = SE3.from_json_dict(poses[image_id].T_W_C)
         anchors = build_alignment_anchors(
             image_id, T_W_C, camera, w, h, self.project_store.get_marker_size_m(),
             self.project_store.get_detections_for_image(image_id), self.project_store.get_optimized_marker_poses(ba_run_id),
             self.dense_store.list_active_dense_points(), self.dense_store.list_track_observations(), self.dense_store.list_tracks(),
             config.include_dense_track_points, config.include_marker_surfaces,
+            config.marker_sample_grid_size,
         )
         self._check_cancel(cancel_event)
         stage = "aligning_depth"
         self._emit(progress, "running_inference", f"Image {index}/{total} — running Depth Anything V2 Small inference", index, total, image_id, (index - 0.4) / total)
         try:
-            artifact = self._backend.infer(rgb, anchors, camera, config, progress)
+            def backend_progress(event: MetricDepthProgress) -> None:
+                self._check_cancel(cancel_event)
+                if progress is not None:
+                    progress(event)
+                self._check_cancel(cancel_event)
+
+            artifact = self._backend.infer(rgb, anchors, camera, config, backend_progress)
+        except CancelledError:
+            raise
         except Exception as exc:
             raise StageError("running_inference", str(exc)) from exc
         if artifact.metrics.status != "success":

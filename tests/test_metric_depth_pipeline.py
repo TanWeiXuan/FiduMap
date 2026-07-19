@@ -7,7 +7,7 @@ import pytest
 
 from map_builder.camera_models import PinholeRadTanCameraModel
 from map_builder.geometry import SE3
-from map_builder.metric_depth.models import BACKEND_DAV2, MetricDepthArtifact, MetricDepthConfig, MetricDepthMetrics
+from map_builder.metric_depth.models import BACKEND_DAV2, MetricDepthArtifact, MetricDepthConfig, MetricDepthMetrics, MetricDepthProgress
 from map_builder.metric_depth.pipeline import MetricDepthPipeline
 from map_builder.project import BAConfig, OptimizedCameraPose, ProjectStore
 
@@ -121,3 +121,24 @@ def test_pipeline_rejects_export_of_legacy_backend_run(tmp_path):
         pipeline.export_all(legacy, tmp_path / "export")
     assert pipeline.store.get_run(legacy) is not None
     pipeline.close()
+
+
+def test_cancellation_is_checked_between_backend_alignment_stages(tmp_path):
+    image_id = _project(tmp_path, (10,))[0]
+    cancel = threading.Event()
+
+    class StageBackend(_FakeBackend):
+        def infer(self, image_rgb, anchors, camera, config, progress=None):
+            assert progress is not None
+            progress(MetricDepthProgress("fitting_spline", "Fitting monotonic depth spline"))
+            progress(MetricDepthProgress("fitting_spatial_correction", "Fitting spatial correction field"))
+            return super().infer(image_rgb, anchors, camera, config, progress)
+
+    def on_progress(event):
+        if event.stage == "fitting_spline":
+            cancel.set()
+
+    pipeline = MetricDepthPipeline(tmp_path, StageBackend)
+    summary = pipeline.run_image(image_id, _config(), on_progress, cancel)
+    pipeline.close()
+    assert summary.cancelled and summary.completed == 0

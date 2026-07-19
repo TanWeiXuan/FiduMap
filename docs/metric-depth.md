@@ -2,46 +2,58 @@
 
 Metric Depth Maps is an optional offline workflow that creates a depth artifact for each optimized reference image. It does not perform runtime matching, online localization, or PnP.
 
-## Depth Anything V2 Small — aligned
+## Depth Anything V2 Small alignment
 
-The workflow always uses `depth-anything/Depth-Anything-V2-Small-hf`. Depth Anything V2 predicts relative depth, then FiduMap robustly fits a global affine relationship in inverse depth:
+The workflow uses `depth-anything/Depth-Anything-V2-Small-hf` and offers two independently fitted per-image alignment methods.
 
-```text
-1 / z = a * prediction + b
-```
+- **Monotonic spline + spatial correction** is the GUI default. It models `log(z) = g(prediction) + h(u,v)`, where `g` is a robust monotonic piecewise-linear spline and `h` is a small smooth bilinear control grid.
+- **Robust affine inverse depth** preserves the original baseline, `1/z = a*prediction + b`. Saved configurations created before the alignment selector existed load with this compatibility mode.
 
-This produces globally aligned metric depth, but local errors can remain, especially far from alignment anchors. The implementation and paper are attributed to the [Depth Anything V2 project](https://github.com/DepthAnything/Depth-Anything-V2). Review the model card and project license before redistribution or commercial use.
+The spline fits both increasing and decreasing directions using weighted pool-adjacent-violators isotonic regression, compresses the result to 12 weighted-quantile knots by default, and clamps values beyond the fitted training range to the nearest endpoint. The 8-by-6 spatial grid fits training-anchor log-depth residuals with robust reweighting, Laplacian smoothness, and a zero prior. Its applied correction is bounded to `+/-0.4` log-depth by default. No SciPy, MLP, per-pixel optimizer, or neural training is used.
+
+Both methods remain per-image alignments. The spline-spatial method can model nonlinear and gradual image-location bias, but it does **not** guarantee consistency between images.
 
 ## Installation and offline behavior
 
-The base application does not require the inference or VTK packages. Install the optional stack with:
+Install the optional inference and viewer stack with:
 
 ```sh
 python -m pip install -r src/map_builder/requirements-depth.txt
 ```
 
-The model reference can be a Hugging Face ID or a local Transformers model directory. **Allow model download** is off by default. In that mode all `from_pretrained` calls use `local_files_only=True`, so an uncached ID or invalid directory fails clearly and no network download is attempted. Enabling the checkbox lets Transformers use its normal Hugging Face cache and download behavior; FiduMap has no custom downloader or checkpoint manager.
+**Allow model download** is off by default. In that mode Transformers uses `local_files_only=True`, so an uncached ID or invalid directory fails clearly without a network request. The model is loaded once per batch and reused across sequential images. Fitting time and DAV2 inference time are recorded separately. Work runs on the existing background worker; Tk's main thread only handles progress and display updates.
 
-The model is loaded once per batch, reused across images, and images are processed sequentially. CPU inference can be slow, but memory remains bounded to one image/model forward pass at a time. Cancellation is checked between stages and images, not during a model forward pass.
+## Balanced metric anchors
 
-## Metric alignment anchors
+Active dense points contribute one anchor only when the track has a stored observation in the image. The metric point is transformed using:
 
-DAV2 needs trusted metric geometry to align its relative prediction:
+```text
+X_C = R_W_C.T @ (X_W - t_W_C)
+```
 
-1. Active dense points are accepted only when their track has an actual observation in the selected image. The world point is transformed with `X_C = R_W_C.T @ (X_W - t_W_C)`. Behind-camera and non-finite points are rejected. Confidence is a bounded function of observation count and available reprojection diagnostics.
-2. Markers detected in the image and present in the current optimized marker map are rasterized only inside their detected polygon. Camera rays are intersected with the finite known marker square; the plane is never extended beyond its boundary. These exact surface anchors have highest priority and confidence.
+Only finite forward points are accepted. Reprojection diagnostics and observation count produce bounded raw confidence, which distributes weight within the dense-track source.
 
-Missing pixels remain zero and are represented separately by an internal mask. Collisions prefer marker surfaces, then confidence, then the nearer equal-confidence depth. Coverage is measured on a fixed 4×4 grid. No wall-plane propagation, occlusion guessing, or projection of every global dense point is performed. Anchor rasters exist only during alignment; they are not stored, exported, displayed, or included in pixel readouts.
+Each visible optimized marker contributes a deterministic 6-by-6 grid in the finite marker-local square, independent of its projected pixel area. Samples are transformed through `T_W_M` and `T_W_C`, projected with the authoritative camera model, and retained only when finite, in bounds, and inside the detected marker polygon. The marker plane is never extended.
 
-## Alignment and confidence
+When both sources exist they receive equal total fit weight. Visible markers receive equal shares of the marker total, divided over their valid samples; dense tracks divide their source total according to raw confidence. Stored diagnostics retain raw confidence and final fit weight. Pixel collisions still prefer markers, then confidence.
 
-Alignment uses confidence-weighted NumPy least squares with iterative MAD rejection. It rejects insufficient anchor count or grid coverage, anchors without meaningful depth variation, too few robust inliers, non-finite coefficients, more than 25% non-positive fitted inverse depths, and excessive median relative anchor error.
+## Deterministic validation
 
-Confidence is deliberately simple: a global residual/inlier quality score multiplied by OpenCV distance-to-anchor decay and anchor confidence. It is **not a calibrated probability**. Only finite, positive, confidence-qualified depth should be considered by any future localization code.
+Anchors are split reproducibly using SHA-256 over image ID, source, group ID, and pixel coordinates. The default is 80% training and 20% holdout, stratified by source. Complete marker or track groups are held out when this leaves enough training support; otherwise a deterministic sample split is used. The minimum configured training count is always preserved.
+
+Held-out anchors do not affect spline fitting, spatial fitting, robust inlier selection, or regularization. They select spline direction when enough are available, as required by the two-direction model; otherwise direction selection uses robust training loss and emits a warning. Training, holdout, marker-only holdout, dense-track-only holdout, and same-split affine-baseline errors are reported separately. A result is rejected for insufficient training coverage, an unfittable spline, singular/non-finite spatial solve, excessive invalid depth, excessive holdout relative error, or excessive correction saturation. A validated spline-spatial result is never silently replaced by affine output.
+
+Metrics are evaluated before any anchor overwrite. After successful validation, trusted anchor pixels receive exact metric Z-depth. Marker/track collision priority remains unchanged.
+
+## Confidence and extrapolation
+
+Spline-spatial confidence combines held-out alignment quality, robust training-inlier fraction, distance to the nearest training anchor, spline-range support, spatial-correction magnitude, and correction saturation. OpenCV's distance transform supplies the support distance. Confidence is zero for invalid depth and reduced outside the fitted spline range, far from training anchors, for large corrections, and where the correction bound is reached. Exact marker anchors receive high confidence; dense-track anchor confidence follows their quality.
+
+Confidence is a heuristic, **not a calibrated probability**. Sparse anchors do not make unsupported pixels metrically observed. Smoothness, the zero prior, and the DAV2 prediction govern unsupported regions.
 
 ## Z-depth and radial range
 
-The model and alignment use camera Z-depth. Stored and exported canonical depth also includes radial range along the unit camera bearing:
+Alignment uses camera Z-depth. Canonical storage also contains radial range along the unit camera bearing:
 
 ```text
 ray_C = camera_model.unproject(pixel)
@@ -49,29 +61,33 @@ range_m = z_depth_m / ray_C.z
 X_C = range_m * ray_C
 ```
 
-Conversion requires a finite forward ray (`ray_C.z > 0`) and finite positive Z-depth. Rear-hemisphere pixels are invalid. This workflow does not implement virtual-pinhole tiling, so learned inference over very wide-angle or fisheye imagery has no full-field correction.
+Only finite forward rays and finite positive depths are valid.
 
-## Storage, staleness, and export
+## Artifacts and compatibility
 
-Metadata is stored in `.map_builder/metric_depth.sqlite`; arrays are atomic NPZ files under `.map_builder/metric_depth_maps/<run_id>/<image_id>.npz`. Arrays never enter the main project database. A product is stale when its marker BA run ID differs from the current successful BA run. The dense signature records active point count, track count, and maximum active point ID for diagnostics.
+Metadata is stored in `.map_builder/metric_depth.sqlite`; arrays are atomic NPZ files under `.map_builder/metric_depth_maps/<run_id>/<image_id>.npz`. Full arrays are never stored in SQLite.
 
-New artifacts and canonical exports contain only `z_depth_m`, `range_m`, `valid_mask`, and `confidence`, plus JSON metadata containing image/camera/pose/run conventions and quality metrics. Portable exports add a uint16 millimetre range PNG (zero means invalid) and uint8 confidence PNG. Values above 65.535 m are written as invalid zero and explicitly flagged/count-recorded in metadata; they never wrap.
+Every artifact retains the standard final-output arrays:
 
-Older DAV2 NPZ files that contain extra legacy arrays remain readable; those arrays are ignored. Historical records from other backends are preserved in SQLite and on disk, but are excluded from current DAV2 selection, reuse, and export.
+```text
+z_depth_m
+range_m
+valid_mask
+confidence
+```
 
-## GUI workflow
+Schema-v2 spline-spatial artifacts can additionally contain global spline depth, clamped spatial log correction, extrapolation mask, anchor mask, sparse pre-overwrite residual, train/holdout split, and DAV2 prediction. Metadata records normalization percentiles, spline knots/direction, grid dimensions/coefficients, regularization, bounds, training and holdout metrics, affine baseline metrics, warnings, and timings. Old artifacts with only standard arrays remain readable; diagnostic display modes report that data is unavailable instead of failing.
 
-After successful marker BA, open the third left tab, **Metric Depth Maps**, configure the DAV2 model/device and alignment-anchor sources, then generate the selected optimized image or all optimized images. Batch failures are logged per image and do not abort later images. Export buttons require successful DAV2 products.
+## GUI and diagnostic views
 
-The Image Viewer adds RGB, radial range, camera Z, confidence, and RGB-overlay modes with robust display percentiles and per-pixel metric readout. It does not normalize exported arrays. The third right tab, **Depth 3D View**, combines all selected images that have current DAV2 artifacts and optimized poses into one world-coordinate point cloud; the Image Viewer continues to show the focused selected row. Selection loading is debounced and performed in the background, and unavailable images are skipped with a status summary.
+The Metric Depth Maps tab provides the two-method selector and a separated advanced section for knot count, grid columns/rows, maximum correction, and holdout fraction. Per-artifact summaries include method, split counts, source counts, training/holdout errors, affine comparison, spatial statistics, saturation, and extrapolation.
 
-**Maximum scene points** is a global budget shared fairly by the selected images. Sampling happens before ray unprojection, so lowering this value directly reduces scene-building and rendering work. Raising the confidence threshold also removes low-confidence points. Color, point-size, and overlay changes reuse the prepared geometry. VTK is optional; without it the tab shows the install command and the rest of the GUI remains usable.
+The Image Viewer preserves RGB, radial range, camera Z, confidence, overlays, markers, XFeat, pan, zoom, and pixel readout. Spline-spatial artifacts add Global spline depth, Spatial correction, Final aligned depth, Anchor residual, Anchor split, and Spline extrapolation. Spatial correction and residual use zero-centered diverging colors; residuals remain sparse rather than being interpolated into unsupported areas.
 
-The viewer first attempts VTK's native `vtkTkRenderWindowInteractor`. Standard binary VTK wheels can omit the native RenderingTk library, particularly on Windows. If that bridge cannot load, FiduMap automatically uses an embedded Tk canvas backed by VTK off-screen rendering; orbit, pan, zoom, reset, coloring, and scene overlays remain available. Canvas interaction redraws are coalesced at about 30 FPS and use a half-resolution preview while moving, followed by a full-resolution frame when interaction stops. If both rendering paths fail, only the Depth 3D View is disabled and the tab reports the precise error.
+## Limitations
 
-## Known limitations
-
-- No rear-hemisphere or virtual-pinhole learned inference support.
-- Alignment is one global affine inverse-depth fit and may be locally inaccurate.
-- Confidence is heuristic, not probabilistic.
-- No cross-view depth verification/fusion, meshing, training, online feature matching, PnP, or runtime localization is included.
+- Alignment is independently fitted for each image and does not guarantee cross-image consistency.
+- Sparse anchors do not uniquely determine unsupported regions.
+- Held-out anchor accuracy is more meaningful than training residual, but it only measures sampled support.
+- Multi-view verification is still required for localization-grade dense geometry.
+- There is no depth fusion, TSDF, surfels, meshing, stereo, camera-pose optimization, runtime matching, or PnP in this workflow.

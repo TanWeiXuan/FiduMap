@@ -886,6 +886,7 @@ class MainWindow(ttk.Frame):
             self._selected_metric_depth_run_id = None
         else:
             self.viewer.set_metric_depth_artifact(result.primary_artifact)
+            self.metric_depth_controls.set_artifact_summary(result.primary_artifact)
             self._selected_metric_depth_run_id = result.primary_run_id
         self.depth_3d_viewer.set_depth_clouds(
             result.layers,

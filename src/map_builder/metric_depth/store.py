@@ -10,7 +10,7 @@ from typing import Any
 
 import numpy as np
 
-from .models import BACKEND_DAV2, MetricDepthArtifact, MetricDepthMetrics
+from .models import ARTIFACT_SCHEMA_VERSION, BACKEND_DAV2, MetricDepthArtifact, MetricDepthMetrics
 
 
 PROJECT_DIR_NAME = ".map_builder"
@@ -118,17 +118,31 @@ class MetricDepthStore:
         temp_path = Path(handle.name)
         try:
             with handle:
-                np.savez_compressed(
-                    handle,
+                metadata = dict(artifact.metadata)
+                metadata.setdefault("artifact_schema_version", ARTIFACT_SCHEMA_VERSION)
+                arrays: dict[str, Any] = dict(
                     z_depth_m=np.asarray(artifact.z_depth_m, dtype=np.float32),
                     range_m=np.asarray(artifact.range_m, dtype=np.float32),
                     valid_mask=np.asarray(artifact.valid_mask, dtype=np.uint8),
                     confidence=np.asarray(artifact.confidence, dtype=np.float16),
-                    metadata_json=np.array(json.dumps(artifact.metadata, sort_keys=True)),
+                    metadata_json=np.array(json.dumps(metadata, sort_keys=True)),
                     metrics_json=np.array(json.dumps(artifact.metrics.to_dict(), sort_keys=True)),
                     image_id=np.array(artifact.image_id, dtype=np.int64),
                     backend=np.array(artifact.backend),
                 )
+                optional = {
+                    "global_spline_z_depth_m": (artifact.global_spline_z_depth_m, np.float32),
+                    "spatial_log_correction": (artifact.spatial_log_correction, np.float32),
+                    "alignment_extrapolation_mask": (artifact.alignment_extrapolation_mask, np.uint8),
+                    "anchor_mask": (artifact.anchor_mask, np.uint8),
+                    "anchor_residual_m": (artifact.anchor_residual_m, np.float32),
+                    "anchor_split": (artifact.anchor_split, np.uint8),
+                    "dav2_prediction": (artifact.dav2_prediction, np.float32),
+                }
+                for name, (value, dtype) in optional.items():
+                    if value is not None:
+                        arrays[name] = np.asarray(value, dtype=dtype)
+                np.savez_compressed(handle, **arrays)
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temp_path, target)
@@ -153,12 +167,28 @@ class MetricDepthStore:
         if not path.exists():
             return None
         with np.load(path, allow_pickle=False) as data:
-            metadata = json.loads(str(data["metadata_json"].item()))
-            metrics = _load_metrics(str(data["metrics_json"].item()))
+            names = set(data.files)
+            metadata = json.loads(str(data["metadata_json"].item())) if "metadata_json" in names else {"artifact_schema_version": 1}
+            metrics = _load_metrics(str(data["metrics_json"].item())) if "metrics_json" in names else MetricDepthMetrics(
+                anchor_point_count=int(row["prompt_count"] or 0),
+                anchor_spatial_coverage=float(row["prompt_coverage"] or 0.0),
+                valid_output_fraction=float(row["valid_fraction"] or 0.0),
+                median_anchor_absolute_error_m=row["median_anchor_error_m"],
+                processing_duration_s=float(row["processing_seconds"] or 0.0),
+                status="success",
+            )
+            def optional(name: str, dtype: Any) -> np.ndarray | None:
+                return None if name not in names else data[name].astype(dtype)
             return MetricDepthArtifact(
-                int(data["image_id"]), str(data["backend"].item()), int(row["width"]), int(row["height"]),
+                int(data["image_id"]) if "image_id" in names else int(image_id),
+                str(data["backend"].item()) if "backend" in names else BACKEND_DAV2,
+                int(row["width"] or data["z_depth_m"].shape[1]), int(row["height"] or data["z_depth_m"].shape[0]),
                 data["z_depth_m"].astype(np.float32), data["range_m"].astype(np.float32), data["valid_mask"].astype(bool),
                 data["confidence"].astype(np.float32), metadata, metrics,
+                optional("global_spline_z_depth_m", np.float32), optional("spatial_log_correction", np.float32),
+                optional("alignment_extrapolation_mask", bool), optional("anchor_mask", bool),
+                optional("anchor_residual_m", np.float32), optional("anchor_split", np.uint8),
+                optional("dav2_prediction", np.float32),
             )
 
     def get_record(self, run_id: int, image_id: int) -> sqlite3.Row | None:

@@ -6,7 +6,12 @@ from tkinter import filedialog
 from typing import Callable
 
 from map_builder.metric_depth.availability import check_inference_availability
-from map_builder.metric_depth.models import MetricDepthConfig, MetricDepthProgress
+from map_builder.metric_depth.models import (
+    ALIGNMENT_AFFINE,
+    ALIGNMENT_SPLINE_SPATIAL,
+    MetricDepthConfig,
+    MetricDepthProgress,
+)
 
 from .metric_depth_control_panel_ui import build_metric_depth_controls
 from .scrollable_frame import ScrollableFrame
@@ -15,6 +20,10 @@ from .scrollable_frame import ScrollableFrame
 class MetricDepthControlPanel(ScrollableFrame):
     BACKEND_LABEL = "Depth Anything V2 Small — aligned"
     DEFAULT_MODEL = "depth-anything/Depth-Anything-V2-Small-hf"
+    ALIGNMENT_LABELS = {
+        "Robust affine inverse depth": ALIGNMENT_AFFINE,
+        "Monotonic spline + spatial correction": ALIGNMENT_SPLINE_SPATIAL,
+    }
 
     def __init__(self, master: tk.Misc, generate_selected: Callable[[], None], generate_all: Callable[[], None], cancel: Callable[[], None], export_selected: Callable[[], None], export_run: Callable[[], None], **kwargs: object):
         super().__init__(master, **kwargs)
@@ -30,6 +39,12 @@ class MetricDepthControlPanel(ScrollableFrame):
         self.model_var = tk.StringVar(value=self.DEFAULT_MODEL)
         self.device_var = tk.StringVar(value="auto")
         self.inference_size_var = tk.StringVar(value="518")
+        self.alignment_mode_var = tk.StringVar(value="Monotonic spline + spatial correction")
+        self.spline_knots_var = tk.StringVar(value="12")
+        self.spatial_grid_columns_var = tk.StringVar(value="8")
+        self.spatial_grid_rows_var = tk.StringVar(value="6")
+        self.maximum_log_correction_var = tk.StringVar(value="0.4")
+        self.holdout_fraction_var = tk.StringVar(value="0.2")
         self.include_dense_var = tk.BooleanVar(value=True)
         self.include_markers_var = tk.BooleanVar(value=True)
         self.allow_download_var = tk.BooleanVar(value=False)
@@ -44,13 +59,24 @@ class MetricDepthControlPanel(ScrollableFrame):
     def config(self) -> MetricDepthConfig:
         try:
             size = int(self.inference_size_var.get())
+            knots = int(self.spline_knots_var.get())
+            grid_columns = int(self.spatial_grid_columns_var.get())
+            grid_rows = int(self.spatial_grid_rows_var.get())
+            correction = float(self.maximum_log_correction_var.get())
+            holdout = float(self.holdout_fraction_var.get())
         except ValueError as exc:
-            raise ValueError("Inference size must be a positive integer.") from exc
+            raise ValueError("Inference size, spline knots, grid dimensions, correction, and holdout must be numeric.") from exc
+        alignment_mode = self.ALIGNMENT_LABELS.get(self.alignment_mode_var.get())
+        if alignment_mode is None:
+            raise ValueError("Select a supported alignment method.")
         config = MetricDepthConfig(
             model_id_or_path=self.model_var.get().strip(), device=self.device_var.get(),
             allow_download=bool(self.allow_download_var.get()), inference_size=size,
             include_dense_track_points=bool(self.include_dense_var.get()), include_marker_surfaces=bool(self.include_markers_var.get()),
             recompute=bool(self.recompute_var.get()),
+            alignment_mode=alignment_mode, spline_knot_count=knots,
+            spatial_grid_columns=grid_columns, spatial_grid_rows=grid_rows,
+            maximum_log_depth_correction=correction, holdout_fraction=holdout,
         )
         config.validate()
         return config
@@ -87,6 +113,29 @@ class MetricDepthControlPanel(ScrollableFrame):
             f"Current backend: {self.BACKEND_LABEL}  Run ID: {run_id if run_id is not None else 'none'}"
         )
 
+    def set_artifact_summary(self, artifact: object | None) -> None:
+        if artifact is None:
+            return
+        metrics = getattr(artifact, "metrics", None)
+        if metrics is None:
+            return
+        mode = getattr(metrics, "alignment_mode", "unknown")
+        summary = (
+            f"Alignment method: {mode}\n"
+            f"Training anchors: {getattr(metrics, 'training_anchor_count', 0)}  Held-out anchors: {getattr(metrics, 'holdout_anchor_count', 0)}\n"
+            f"Marker groups: {getattr(metrics, 'marker_group_count', 0)}  Dense-track anchors: {getattr(metrics, 'dense_track_anchor_count', 0)}\n"
+            f"Training median relative error: {_ratio(getattr(metrics, 'training_median_relative_error', None))}  "
+            f"Holdout: {_ratio(getattr(metrics, 'holdout_median_relative_error', None))}\n"
+            f"Affine baseline holdout: {_ratio(getattr(metrics, 'affine_holdout_median_relative_error', None))}\n"
+            f"Spatial RMS: {_ratio(getattr(metrics, 'spatial_correction_rms', None))}  Maximum: {_ratio(getattr(metrics, 'spatial_correction_maximum', None))}\n"
+            f"Saturation: {_percent(getattr(metrics, 'correction_saturation_fraction', None))}  "
+            f"Extrapolated pixels: {_percent(getattr(metrics, 'prediction_extrapolation_fraction', None))}"
+        )
+        warnings = list(getattr(metrics, "warnings", []) or [])
+        if warnings:
+            summary += "\nWarnings: " + "; ".join(str(value) for value in warnings)
+        self.summary_var.set(summary)
+
     def append_log(self, text: str) -> None:
         self.log_text.configure(state="normal")
         self.log_text.insert("end", text.rstrip() + "\n")
@@ -119,3 +168,11 @@ class MetricDepthControlPanel(ScrollableFrame):
 
 def _metric(value: object) -> str:
     return "n/a" if value is None else f"{float(value):.3f} m"
+
+
+def _ratio(value: object) -> str:
+    return "n/a" if value is None else f"{float(value):.3f}"
+
+
+def _percent(value: object) -> str:
+    return "n/a" if value is None else f"{100.0 * float(value):.1f}%"
