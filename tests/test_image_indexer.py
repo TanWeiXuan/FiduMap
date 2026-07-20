@@ -33,23 +33,10 @@ def test_image_indexer_adds_updates_and_marks_missing(tmp_path: Path) -> None:
         assert by_path["first.jpg"].missing is False
         assert by_path["second.png"].missing is True
         assert store.get_image(image.id).ignored is True  # type: ignore[union-attr]
-    finally:
-        store.close()
 
-
-def test_image_indexer_marks_missing_image_present_when_reappears(tmp_path: Path) -> None:
-    image_path = tmp_path / "image.bmp"
-    image_path.write_bytes(b"initial")
-    store = ProjectStore.open(tmp_path)
-    try:
-        indexer = ImageIndexer(read_dimensions=False)
+        second.write_bytes(b"returned")
         indexer.index_folder(tmp_path, store)
-        image_path.unlink()
-        indexer.index_folder(tmp_path, store)
-        assert store.list_images()[0].missing is True
-
-        image_path.write_bytes(b"returned")
-        indexer.index_folder(tmp_path, store)
-        assert store.list_images()[0].missing is False
+        by_path = {image.rel_path: image for image in store.list_images()}
+        assert by_path["second.png"].missing is False
     finally:
         store.close()

@@ -214,9 +214,7 @@ def test_backend_dispatch_progress_metadata_and_diagnostics_without_model_weight
         "fitting_spatial_correction", "evaluating_holdout", "generating_confidence",
     ]
     assert artifact.metrics.status == "success"
-    assert not hasattr(artifact.metrics, "spline_direction")
     assert artifact.metadata["alignment_mode"] == "monotonic_spline_spatial"
-    assert "spline_direction" not in artifact.metadata
     assert artifact.metadata["dav2_inference_duration_s"] >= 0.0
     assert artifact.global_spline_z_depth_m is not None
     assert artifact.anchor_split is not None

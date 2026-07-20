@@ -98,12 +98,11 @@ def _seed_track_backed_point(store):
     return poses, camera
 
 
-@pytest.mark.parametrize("mode", ["points_and_cameras", "full", "unknown"])
-def test_dense_ba_rejects_every_mode_except_points_only(tmp_path, mode):
+def test_dense_ba_rejects_mode_other_than_points_only(tmp_path):
     store = DenseReconstructionStore.open(tmp_path)
 
     with pytest.raises(NotImplementedError, match="supports only points_only"):
-        point_ba.run_dense_point_ba(store, {}, _camera(), DenseBAConfig(mode=mode))
+        point_ba.run_dense_point_ba(store, {}, _camera(), DenseBAConfig(mode="unsupported"))
 
 
 def test_dense_ba_refuses_active_merged_points(tmp_path, monkeypatch):

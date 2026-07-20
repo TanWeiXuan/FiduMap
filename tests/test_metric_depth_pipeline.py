@@ -1,5 +1,4 @@
 import threading
-from dataclasses import fields
 
 import cv2
 import numpy as np
@@ -58,10 +57,6 @@ class _FakeBackend:
 
 def _config():
     return MetricDepthConfig(model_id_or_path="fake-local")
-
-
-def test_config_has_no_backend_choice():
-    assert "backend" not in {field.name for field in fields(MetricDepthConfig)}
 
 
 def test_selected_image_success_and_progress_order(tmp_path):

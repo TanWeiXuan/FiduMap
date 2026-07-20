@@ -26,58 +26,6 @@ def triangulate_two_view(C1: np.ndarray, d1: np.ndarray, C2: np.ndarray, d2: np.
     return 0.5 * (p1 + p2), np.linalg.norm(p1 - p2, axis=1)
 
 
-def triangulate_pair_matches(
-    pixels1: np.ndarray,
-    pixels2: np.ndarray,
-    T_W_C1: dict[str, Any],
-    T_W_C2: dict[str, Any],
-    camera_model: Any,
-    config: TriangulationConfig,
-) -> tuple[np.ndarray, np.ndarray]:
-    R1, C1 = _pose_parts(T_W_C1)
-    R2, C2 = _pose_parts(T_W_C2)
-    f1 = camera_model.unproject_many(np.asarray(pixels1, dtype=float))
-    f2 = camera_model.unproject_many(np.asarray(pixels2, dtype=float))
-    d1 = _normalize_rows((R1 @ f1.T).T)
-    d2 = _normalize_rows((R2 @ f2.T).T)
-    X, gaps = triangulate_two_view(C1, d1, C2, d2)
-    angles = ray_angles_deg(d1, d2)
-    depths1 = np.sum((X - C1) * d1, axis=1)
-    depths2 = np.sum((X - C2) * d2, axis=1)
-    err1 = reprojection_errors(X, np.asarray(pixels1, dtype=float), T_W_C1, camera_model)
-    err2 = reprojection_errors(X, np.asarray(pixels2, dtype=float), T_W_C2, camera_model)
-    ranges = np.maximum(np.linalg.norm(X - C1, axis=1), np.linalg.norm(X - C2, axis=1))
-    valid = (
-        np.all(np.isfinite(X), axis=1)
-        & np.isfinite(gaps)
-        & np.isfinite(err1)
-        & np.isfinite(err2)
-        & (depths1 > 0.0)
-        & (depths2 > 0.0)
-        & (angles >= config.min_triangulation_angle_deg)
-        & (err1 <= config.max_reprojection_error_px)
-        & (err2 <= config.max_reprojection_error_px)
-        & (gaps <= config.max_ray_gap_m)
-        & (ranges <= config.max_depth_m)
-    )
-    return X, valid
-
-
-def triangulate_multiview(
-    observations: list[tuple[int, int, float, float]],
-    poses_by_image: dict[int, dict[str, Any]],
-    camera_model: Any,
-    config: TriangulationConfig,
-) -> tuple[np.ndarray | None, dict[str, float]]:
-    X, metrics, _inlier_mask = triangulate_multiview_robust(
-        observations,
-        poses_by_image,
-        camera_model,
-        config,
-    )
-    return X, metrics
-
-
 def triangulate_multiview_robust(
     observations: list[tuple[int, int, float, float]],
     poses_by_image: dict[int, dict[str, Any]],

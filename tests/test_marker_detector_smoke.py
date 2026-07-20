@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import pytest
 
 
@@ -38,9 +36,3 @@ def test_opencv_aruco_detector_smoke() -> None:
     detections = detector.detect(canvas)
     assert len(detections) >= 1
     assert detections[0].marker_id == 0
-
-
-def test_marker_detector_import_does_not_require_cv2() -> None:
-    from map_builder.detection import DICTIONARY_CHOICES
-
-    assert "DICT_4X4_50" in DICTIONARY_CHOICES

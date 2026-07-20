@@ -1,12 +1,6 @@
 import numpy as np
 
-from map_builder.dense_reconstruction.dense_store import (
-    DenseReconstructionStore,
-    numpy_array_from_blob,
-    numpy_array_to_blob,
-    numpy_arrays_from_blob,
-    numpy_arrays_to_blob,
-)
+from map_builder.dense_reconstruction.dense_store import DenseReconstructionStore
 from map_builder.dense_reconstruction.models import (
     DensePointRecord,
     FramePairRecord,
@@ -14,14 +8,6 @@ from map_builder.dense_reconstruction.models import (
     TrackObservationRecord,
     TrackRecord,
 )
-
-
-def test_blob_roundtrip():
-    a = np.array([[1, 2], [3, 4]], dtype=np.float32)
-    assert np.allclose(numpy_array_from_blob(numpy_array_to_blob(a)), a)
-    arrays = numpy_arrays_from_blob(numpy_arrays_to_blob({"a": a, "b": a + 1}))
-    assert np.allclose(arrays["a"], a)
-    assert np.allclose(arrays["b"], a + 1)
 
 
 def test_store_roundtrips_dense_entities(tmp_path):

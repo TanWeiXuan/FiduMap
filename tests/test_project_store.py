@@ -3,7 +3,7 @@ from pathlib import Path
 from map_builder.project import DetectorRunConfig, MarkerDetection, ProjectStore
 
 
-def test_project_store_persists_images_flags_and_detections(tmp_path: Path) -> None:
+def test_project_store_persists_detections_and_marks_changed_image_stale(tmp_path: Path) -> None:
     store = ProjectStore.open(tmp_path)
     try:
         assert store.upsert_image_index_entry("a.jpg", 10, 100, 640, 480) == "new"
@@ -44,21 +44,10 @@ def test_project_store_persists_images_flags_and_detections(tmp_path: Path) -> N
         detections = reopened.get_detections_for_image(image.id)
         assert detections[0].marker_id == 7
         assert detections[0].corners[2] == [1.0, 1.0]
-    finally:
-        reopened.close()
 
-
-def test_project_store_marks_detected_image_stale_when_changed(tmp_path: Path) -> None:
-    store = ProjectStore.open(tmp_path)
-    try:
-        store.upsert_image_index_entry("a.jpg", 10, 100)
-        image = store.list_images()[0]
-        run_id = store.create_detector_run(DetectorRunConfig(detector_type="ArUco", dictionary_name="DICT_4X4_50"))
-        store.replace_image_detections(image.id, run_id, [])
-
-        assert store.upsert_image_index_entry("a.jpg", 11, 101) == "updated"
-        changed = store.list_images()[0]
+        assert reopened.upsert_image_index_entry("a.jpg", 11, 101) == "updated"
+        changed = reopened.list_images()[0]
         assert changed.detection_status == "stale"
         assert changed.modified_since_detection is True
     finally:
-        store.close()
+        reopened.close()

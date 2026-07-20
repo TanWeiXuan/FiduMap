@@ -21,8 +21,3 @@ def ensure_vendor_parent_on_path() -> None:
 def vendored_xfeat_file_exists() -> bool:
     base = vendored_xfeat_dir()
     return (base / "xfeat.py").is_file() and (base / "model.py").is_file()
-
-
-def vendored_lighterglue_file_exists() -> bool:
-    base = vendored_xfeat_dir()
-    return (base / "lighterglue.py").is_file() and (base / "weights" / "xfeat-lighterglue.pt").is_file()

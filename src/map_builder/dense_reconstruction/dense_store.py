@@ -39,17 +39,6 @@ def numpy_array_from_blob(blob: bytes) -> np.ndarray:
     return data
 
 
-def numpy_arrays_to_blob(arrays: dict[str, np.ndarray]) -> bytes:
-    buf = io.BytesIO()
-    np.savez_compressed(buf, **arrays)
-    return buf.getvalue()
-
-
-def numpy_arrays_from_blob(blob: bytes) -> dict[str, np.ndarray]:
-    data = np.load(io.BytesIO(blob), allow_pickle=False)
-    return {k: data[k] for k in data.files}
-
-
 class DenseReconstructionStore:
     def __init__(self, folder: Path, conn: sqlite3.Connection):
         self.folder = folder
