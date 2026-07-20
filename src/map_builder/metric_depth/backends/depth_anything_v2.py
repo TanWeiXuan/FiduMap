@@ -183,7 +183,6 @@ class DepthAnythingV2AlignedBackend:
             marker_holdout_median_relative_error=holdout.get("marker_median_relative_error"),
             dense_track_holdout_median_relative_error=holdout.get("dense_track_median_relative_error"),
             affine_holdout_median_relative_error=result.affine_holdout_median_relative_error,
-            spline_direction=result.spline_direction,
             spline_knot_count=len(result.spline_knots_x),
             spatial_correction_rms=correction.get("unclamped_rms"),
             spatial_correction_maximum=correction.get("unclamped_maximum_absolute"),
@@ -199,7 +198,6 @@ class DepthAnythingV2AlignedBackend:
             "prediction_normalization": result.prediction_normalization,
             "spline_knots_x": result.spline_knots_x.tolist(),
             "spline_knots_log_z": result.spline_knots_y.tolist(),
-            "spline_direction": result.spline_direction,
             "spatial_grid_dimensions": list(result.spatial_grid_coefficients.shape[::-1]),
             "spatial_grid_coefficients": result.spatial_grid_coefficients.tolist(),
             "spatial_regularization": {

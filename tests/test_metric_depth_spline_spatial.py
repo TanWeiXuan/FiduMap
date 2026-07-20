@@ -3,13 +3,14 @@ import numpy as np
 from map_builder.camera_models import PinholeRadTanCameraModel
 from map_builder.geometry import SE3
 from map_builder.metric_depth.alignment import (
+    compress_decreasing_isotonic_to_knots,
     deterministic_anchor_split,
     evaluate_monotonic_spline,
     evaluate_spatial_grid,
-    fit_robust_isotonic,
+    fit_robust_decreasing_isotonic,
     fit_spatial_correction_grid,
     monotonic_spline_spatial_alignment,
-    weighted_isotonic_regression,
+    weighted_decreasing_isotonic_regression,
 )
 from map_builder.metric_depth.anchor_builder import (
     balance_anchor_weights,
@@ -74,19 +75,60 @@ def test_deterministic_stratified_split_never_overlaps_training():
     assert any(a.source == "dense_track" for a, use in zip(anchors, first.holdout_mask) if use)
 
 
-def test_weighted_isotonic_directions_duplicates_robustness_and_clamping():
-    x = np.array([0, 0, 1, 2, 3, 4], dtype=float)
-    increasing = weighted_isotonic_regression(x, [0, 0.2, 0.8, 0.7, 1.5, 2], np.ones(6), True)
-    decreasing = weighted_isotonic_regression(x, [2, 2.2, 1.4, 1.5, 0.5, 0], np.ones(6), False)
-    assert np.all(np.diff(increasing[np.argsort(x)]) >= -1e-12)
-    assert np.all(np.diff(decreasing[np.argsort(x)]) <= 1e-12)
-    curved = 0.4 + 1.2 * x / 4 + 0.25 * (x / 4) ** 2
-    noisy = curved.copy(); noisy[3] += 2.0
-    fitted, robust, _ = fit_robust_isotonic(x, noisy, np.ones(6), True)
+def test_decreasing_pava_preserves_monotonic_samples():
+    fitted = weighted_decreasing_isotonic_regression(
+        np.array([0.0, 1.0, 2.0]), np.array([3.0, 2.0, 1.0])
+    )
+    assert np.allclose(fitted, [3.0, 2.0, 1.0])
+
+
+def test_decreasing_pava_pools_violations():
+    fitted = weighted_decreasing_isotonic_regression(
+        np.array([0.0, 1.0, 2.0]), np.array([3.0, 1.0, 2.0])
+    )
+    assert np.allclose(fitted, [3.0, 1.5, 1.5])
+
+
+def test_decreasing_pava_uses_weighted_pooling():
+    fitted = weighted_decreasing_isotonic_regression(
+        np.array([0.0, 1.0, 2.0]), np.array([3.0, 1.0, 2.0]), np.array([1.0, 3.0, 1.0])
+    )
+    assert np.allclose(fitted, [3.0, 1.25, 1.25])
+
+
+def test_decreasing_pava_combines_duplicate_predictions():
+    x = np.array([1.0, 0.0, 0.0, 2.0])
+    fitted = weighted_decreasing_isotonic_regression(
+        x, np.array([2.0, 4.0, 2.0, 1.0]), np.array([1.0, 1.0, 3.0, 1.0])
+    )
+    duplicate = fitted[x == 0.0]
+    assert np.allclose(duplicate, 2.5)
+    assert np.all(np.diff(fitted[np.argsort(x, kind="mergesort")]) <= 1e-12)
+
+
+def test_robust_decreasing_isotonic_downweights_outlier():
+    x = np.arange(7, dtype=float)
+    y = np.array([7.0, 6.0, 5.0, 12.0, 3.0, 2.0, 1.0])
+    fitted, robust, _ = fit_robust_decreasing_isotonic(x, y, np.ones(7))
     assert robust[3] < 1.0
-    evaluated, extrapolated = evaluate_monotonic_spline(np.array([-1.0, 0.0, 4.0, 5.0]), x, fitted)
-    assert extrapolated.tolist() == [True, False, False, True]
-    assert evaluated[0] == fitted[0] and evaluated[-1] == fitted[-1]
+    assert np.all(np.diff(fitted) <= 1e-12)
+
+
+def test_decreasing_knot_compression_evaluation_and_extrapolation():
+    x = np.linspace(0.0, 1.0, 20)
+    fitted = 2.0 - x**2
+    knots_x, knots_y = compress_decreasing_isotonic_to_knots(x, fitted, np.ones_like(x), 7)
+    assert np.all(np.diff(knots_y) <= 1e-12)
+    samples = np.linspace(knots_x[0], knots_x[-1], 101)
+    evaluated, extrapolated = evaluate_monotonic_spline(samples, knots_x, knots_y)
+    assert np.all(np.diff(evaluated) <= 1e-12)
+    assert not np.any(extrapolated)
+    clamped, outside = evaluate_monotonic_spline(
+        np.array([-1.0, knots_x[0], knots_x[-1], 2.0]), knots_x, knots_y
+    )
+    assert outside.tolist() == [True, False, False, True]
+    assert clamped[0] == knots_y[0]
+    assert clamped[-1] == knots_y[-1]
 
 
 def test_spatial_grid_recovers_smooth_field_and_bounds_are_measurable():
@@ -111,7 +153,7 @@ def _combined_problem():
     yy, xx = np.mgrid[:height, :width]
     prediction = 0.7 * xx / (width - 1) + 0.3 * yy / (height - 1)
     x, y = xx / (width - 1), yy / (height - 1)
-    log_z = 0.4 + 0.8 * prediction + 0.8 * prediction**2 + 0.20*x - 0.14*y + 0.08*np.sin(np.pi*x)*np.sin(np.pi*y)
+    log_z = 2.0 - 0.8 * prediction - 0.8 * prediction**2 + 0.20*x - 0.14*y + 0.08*np.sin(np.pi*x)*np.sin(np.pi*y)
     depth = np.exp(log_z)
     anchors = []
     for index in range(48):
@@ -124,16 +166,19 @@ def _combined_problem():
     return prediction, depth, balance_anchor_weights(anchors)
 
 
-def test_combined_method_beats_affine_is_deterministic_and_overwrites_after_metrics():
+def test_decreasing_spline_spatial_alignment_is_bounded_and_deterministic():
     prediction, expected, anchors = _combined_problem()
     config = MetricDepthConfig(minimum_anchor_count=20, maximum_alignment_median_relative_error=0.5, spatial_grid_columns=6, spatial_grid_rows=5)
     first = monotonic_spline_spatial_alignment(prediction, anchors, 9, config)
     second = monotonic_spline_spatial_alignment(prediction, anchors, 9, config)
     assert first.success and second.success
     assert np.array_equal(first.final_z_depth_m, second.final_z_depth_m)
+    assert np.all(np.diff(first.spline_knots_y) <= 1e-12)
     assert first.holdout_metrics["median_relative_error"] < first.affine_holdout_median_relative_error
+    assert first.holdout_metrics["median_relative_error"] < 0.5
     assert np.all(np.isfinite(first.final_z_depth_m[first.valid_mask]))
     assert np.all(first.final_z_depth_m[first.valid_mask] > 0.0)
+    assert first.correction_statistics["unclamped_maximum_absolute"] < 0.4
     for anchor in anchors:
         assert np.isclose(first.final_z_depth_m[round(anchor.v), round(anchor.u)], anchor.z_depth_m)
     assert first.holdout_metrics["median_relative_error"] > 0.0
@@ -169,7 +214,9 @@ def test_backend_dispatch_progress_metadata_and_diagnostics_without_model_weight
         "fitting_spatial_correction", "evaluating_holdout", "generating_confidence",
     ]
     assert artifact.metrics.status == "success"
+    assert not hasattr(artifact.metrics, "spline_direction")
     assert artifact.metadata["alignment_mode"] == "monotonic_spline_spatial"
+    assert "spline_direction" not in artifact.metadata
     assert artifact.metadata["dav2_inference_duration_s"] >= 0.0
     assert artifact.global_spline_z_depth_m is not None
     assert artifact.anchor_split is not None

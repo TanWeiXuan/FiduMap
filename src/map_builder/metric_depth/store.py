@@ -169,6 +169,7 @@ class MetricDepthStore:
         with np.load(path, allow_pickle=False) as data:
             names = set(data.files)
             metadata = json.loads(str(data["metadata_json"].item())) if "metadata_json" in names else {"artifact_schema_version": 1}
+            metadata.pop("spline_direction", None)
             metrics = _load_metrics(str(data["metrics_json"].item())) if "metrics_json" in names else MetricDepthMetrics(
                 anchor_point_count=int(row["prompt_count"] or 0),
                 anchor_spatial_coverage=float(row["prompt_coverage"] or 0.0),

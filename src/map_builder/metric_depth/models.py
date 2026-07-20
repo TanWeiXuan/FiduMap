@@ -131,7 +131,6 @@ class MetricDepthMetrics:
     marker_holdout_median_relative_error: float | None = None
     dense_track_holdout_median_relative_error: float | None = None
     affine_holdout_median_relative_error: float | None = None
-    spline_direction: str | None = None
     spline_knot_count: int = 0
     spatial_correction_rms: float | None = None
     spatial_correction_maximum: float | None = None

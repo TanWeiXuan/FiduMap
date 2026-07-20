@@ -1,4 +1,6 @@
 import importlib
+import inspect
+import json
 
 import cv2
 import numpy as np
@@ -56,6 +58,25 @@ def test_spline_diagnostic_arrays_round_trip_and_old_standard_only_artifact_load
         assert legacy.metadata["artifact_schema_version"] == 1
 
 
+def test_legacy_spline_direction_metadata_and_metric_are_ignored(tmp_path):
+    artifact = _artifact()
+    artifact.metadata["spline_direction"] = "decreasing"
+    with MetricDepthStore.open(tmp_path) as store:
+        run = store.create_run(BACKEND_DAV2, "local", {}, 7, "points=0")
+        path = store.save_artifact_atomic(run, artifact)
+        with np.load(path, allow_pickle=False) as current:
+            values = {name: current[name] for name in current.files}
+        metrics = json.loads(str(values["metrics_json"].item()))
+        metrics["spline_direction"] = "decreasing"
+        values["metrics_json"] = np.array(json.dumps(metrics))
+        np.savez_compressed(path, **values)
+
+        loaded = store.load_artifact(run, artifact.image_id)
+        assert loaded is not None
+        assert "spline_direction" not in loaded.metadata
+        assert not hasattr(loaded.metrics, "spline_direction")
+
+
 def test_portable_uint16_export_and_overflow_warning(tmp_path):
     artifact = _artifact(distance=2.345)
     paths = export_artifact(artifact, tmp_path)
@@ -111,6 +132,15 @@ def test_gui_imports_without_importing_optional_libraries(monkeypatch):
     newly_loaded = set(sys.modules) - before
     assert "transformers" not in newly_loaded
     assert not any(name == "vtkmodules" or name.startswith("vtkmodules.") for name in newly_loaded)
+
+
+def test_metric_depth_gui_has_no_spline_direction_text():
+    from map_builder.gui.metric_depth_control_panel import MetricDepthControlPanel
+
+    panel_source = inspect.getsource(MetricDepthControlPanel)
+    assert "spline_direction" not in panel_source
+    assert "Spline direction" not in panel_source
+    assert "direction selection" not in panel_source
 
 
 def test_depth_display_modes_are_deterministic():

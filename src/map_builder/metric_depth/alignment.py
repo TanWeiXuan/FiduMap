@@ -30,17 +30,6 @@ class AnchorSplit:
 
 
 @dataclass(frozen=True)
-class MonotonicSplineModel:
-    knots_x: np.ndarray
-    knots_y: np.ndarray
-    direction: str
-    prediction_low: float
-    prediction_high: float
-    fitted_x_min: float
-    fitted_x_max: float
-
-
-@dataclass(frozen=True)
 class SpatialGridFit:
     success: bool
     coefficients: np.ndarray
@@ -65,7 +54,6 @@ class SplineSpatialAlignmentResult:
     holdout_metrics: dict[str, float | int | None] = field(default_factory=dict)
     spline_knots_x: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=float))
     spline_knots_y: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=float))
-    spline_direction: str | None = None
     spatial_grid_coefficients: np.ndarray = field(default_factory=lambda: np.empty((0, 0), dtype=float))
     affine_holdout_median_relative_error: float | None = None
     anchor_mask: np.ndarray | None = None
@@ -248,13 +236,12 @@ def robust_prediction_normalization(prediction: np.ndarray) -> tuple[np.ndarray,
     return normalized, low, high
 
 
-def weighted_isotonic_regression(
+def weighted_decreasing_isotonic_regression(
     x: np.ndarray,
     y: np.ndarray,
     weights: np.ndarray | None = None,
-    increasing: bool = True,
 ) -> np.ndarray:
-    """Weighted PAV fit returned in the original sample order."""
+    """Weighted decreasing PAV fit returned in the original sample order."""
     x = np.asarray(x, dtype=float).reshape(-1)
     y = np.asarray(y, dtype=float).reshape(-1)
     w = np.ones_like(y) if weights is None else np.asarray(weights, dtype=float).reshape(-1)
@@ -267,14 +254,13 @@ def weighted_isotonic_regression(
     unique_x, inverse = np.unique(sorted_x, return_inverse=True)
     unique_w = np.bincount(inverse, weights=sorted_w, minlength=len(unique_x))
     unique_y = np.bincount(inverse, weights=sorted_y * sorted_w, minlength=len(unique_x)) / unique_w
-    target = unique_y if increasing else -unique_y
     levels: list[float] = []
     block_weights: list[float] = []
     starts: list[int] = []
     ends: list[int] = []
-    for index, (value, weight) in enumerate(zip(target, unique_w)):
+    for index, (value, weight) in enumerate(zip(unique_y, unique_w)):
         levels.append(float(value)); block_weights.append(float(weight)); starts.append(index); ends.append(index + 1)
-        while len(levels) >= 2 and levels[-2] > levels[-1]:
+        while len(levels) >= 2 and levels[-2] < levels[-1]:
             combined_weight = block_weights[-2] + block_weights[-1]
             combined_level = (levels[-2] * block_weights[-2] + levels[-1] * block_weights[-1]) / combined_weight
             levels[-2:] = [combined_level]
@@ -284,8 +270,6 @@ def weighted_isotonic_regression(
     fitted_unique = np.empty(len(unique_x), dtype=float)
     for level, start, end in zip(levels, starts, ends):
         fitted_unique[start:end] = level
-    if not increasing:
-        fitted_unique = -fitted_unique
     fitted_sorted = fitted_unique[inverse]
     fitted = np.empty_like(fitted_sorted)
     fitted[order] = fitted_sorted
@@ -306,11 +290,10 @@ def _huber_weights(residual: np.ndarray, base_mask: np.ndarray | None = None) ->
     return robust, magnitude <= 3.5 * scale
 
 
-def fit_robust_isotonic(
+def fit_robust_decreasing_isotonic(
     x: np.ndarray,
     y: np.ndarray,
     weights: np.ndarray,
-    increasing: bool,
     max_iterations: int = 6,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     base = np.asarray(weights, dtype=float)
@@ -319,11 +302,11 @@ def fit_robust_isotonic(
     fitted = np.zeros_like(np.asarray(y, dtype=float))
     for _ in range(max_iterations):
         previous = robust.copy()
-        fitted = weighted_isotonic_regression(x, y, np.maximum(base * robust, 1e-12), increasing)
+        fitted = weighted_decreasing_isotonic_regression(x, y, np.maximum(base * robust, 1e-12))
         robust, inliers = _huber_weights(np.asarray(y, dtype=float) - fitted)
         if np.allclose(previous, robust, atol=1e-3, rtol=1e-3):
             break
-    fitted = weighted_isotonic_regression(x, y, np.maximum(base * robust, 1e-12), increasing)
+    fitted = weighted_decreasing_isotonic_regression(x, y, np.maximum(base * robust, 1e-12))
     return fitted, robust, inliers
 
 
@@ -335,12 +318,11 @@ def _weighted_quantiles(values: np.ndarray, weights: np.ndarray, quantiles: np.n
     return np.interp(quantiles, cumulative, v, left=v[0], right=v[-1])
 
 
-def compress_isotonic_to_knots(
+def compress_decreasing_isotonic_to_knots(
     x: np.ndarray,
     fitted_y: np.ndarray,
     weights: np.ndarray,
     knot_count: int,
-    increasing: bool,
 ) -> tuple[np.ndarray, np.ndarray]:
     x = np.asarray(x, dtype=float)
     y = np.asarray(fitted_y, dtype=float)
@@ -357,7 +339,7 @@ def compress_isotonic_to_knots(
     if len(knots_x) < 2:
         knots_x = np.array([unique_x[0], unique_x[-1]])
     knots_y = np.interp(knots_x, unique_x, unique_y)
-    knots_y = np.maximum.accumulate(knots_y) if increasing else np.minimum.accumulate(knots_y)
+    knots_y = np.minimum.accumulate(knots_y)
     return knots_x, knots_y
 
 
@@ -535,8 +517,6 @@ def monotonic_spline_spatial_alignment(
     split = deterministic_anchor_split(values, image_id, float(getattr(config, "holdout_fraction", 0.2)), minimum)
     train, holdout = split.training_mask, split.holdout_mask
     split_warnings = list(split.warnings)
-    if np.count_nonzero(holdout) < 3:
-        split_warnings.append("held-out anchors are insufficient for spline-direction selection")
     train_support = np.zeros((height, width), dtype=bool)
     train_support[pixel_indices[train, 1], pixel_indices[train, 0]] = True
     coverage_ok, _cells, reason = validate_anchor_coverage(train_support, minimum, int(getattr(config, "minimum_anchor_grid_cells", 3)))
@@ -545,21 +525,16 @@ def monotonic_spline_spatial_alignment(
     if np.ptp(depth[train]) <= max(1e-4, 0.01 * float(np.median(depth[train]))):
         return failure("anchors do not span two meaningful depth ranges", split_warnings)
     target = np.log(depth)
-    candidates: list[tuple[float, bool, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = []
-    for increasing in (True, False):
-        try:
-            fitted, robust, inliers = fit_robust_isotonic(sample_prediction[train], target[train], weights[train], increasing)
-            knots_x, knots_y = compress_isotonic_to_knots(sample_prediction[train], fitted, weights[train] * robust, int(getattr(config, "spline_knot_count", 12)), increasing)
-        except ValueError:
-            continue
-        selection = holdout if np.count_nonzero(holdout) >= 3 else train
-        selected_log, _ = evaluate_monotonic_spline(sample_prediction[selection], knots_x, knots_y)
-        score = float(np.median(np.abs(selected_log - target[selection])))
-        candidates.append((score, increasing, fitted, robust, inliers, knots_x, knots_y))
-    if not candidates:
+    try:
+        fitted, robust, spline_inliers = fit_robust_decreasing_isotonic(
+            sample_prediction[train], target[train], weights[train]
+        )
+        knots_x, knots_y = compress_decreasing_isotonic_to_knots(
+            sample_prediction[train], fitted, weights[train] * robust,
+            int(getattr(config, "spline_knot_count", 12)),
+        )
+    except ValueError:
         return failure("monotonic spline could not be fitted", split_warnings)
-    _, increasing, _fitted, _robust, spline_inliers, knots_x, knots_y = min(candidates, key=lambda item: (item[0], not item[1]))
-    direction = "increasing" if increasing else "decreasing"
     global_log, extrapolation = evaluate_monotonic_spline(normalized, knots_x, knots_y)
     global_depth = np.zeros((height, width), dtype=np.float32)
     finite_global = np.isfinite(global_log)
@@ -656,7 +631,7 @@ def monotonic_spline_spatial_alignment(
         confidence[:] = 0.0
     return SplineSpatialAlignmentResult(
         success, final_depth, valid, confidence, global_depth, correction.astype(np.float32), extrapolation,
-        inlier_map, training_metrics, holdout_metrics, knots_x, knots_y, direction,
+        inlier_map, training_metrics, holdout_metrics, knots_x, knots_y,
         spatial_fit.coefficients, None if affine_error is None else float(affine_error), anchor_mask,
         anchor_residual, split_map, {"percentile_1": prediction_low, "percentile_99": prediction_high},
         {
