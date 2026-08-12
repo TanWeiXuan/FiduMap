@@ -125,8 +125,15 @@ py::tuple solve_ransac_upnp(
         py::array_t<int>(py::array::ShapeContainer{py::ssize_t(0)}));
   }
 
-  const opengv::transformations_t candidates =
-      opengv::absolute_pose::upnp(adapter, ransac.inliers_);
+  opengv::transformations_t candidates;
+  opengv::transformation_t refined_model;
+  problem->optimizeModelCoefficients(
+      ransac.inliers_, ransac.model_coefficients_, refined_model);
+  if (refined_model.allFinite()) {
+    candidates.push_back(refined_model);
+  } else if (ransac.model_coefficients_.allFinite()) {
+    candidates.push_back(ransac.model_coefficients_);
+  }
   py::array_t<double> candidate_array(py::array::ShapeContainer{
       static_cast<py::ssize_t>(candidates.size()), py::ssize_t(3),
       py::ssize_t(4)});
@@ -154,7 +161,7 @@ py::tuple solve_ransac_upnp(
 
 PYBIND11_MODULE(_opengv_native, module) {
   module.doc() =
-      "Minimal OpenGV RANSAC + UPnP binding; candidate transforms are T_W_B.";
+      "Minimal OpenGV RANSAC binding; candidate transforms are T_W_B.";
   module.def("solve_ransac_upnp", &solve_ransac_upnp,
              py::arg("bearings_C"), py::arg("points_W"),
              py::arg("camera_offsets_B"), py::arg("camera_rotations_B_C"),
