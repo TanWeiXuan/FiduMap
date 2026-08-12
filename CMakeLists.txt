@@ -10,6 +10,10 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(EIGEN_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/eigen" CACHE PATH "" FORCE)
 set(EIGEN_INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/vendor/eigen" CACHE PATH "" FORCE)
 
+# OpenGV still declares compatibility with CMake 2.8. CMake 4 removed that
+# compatibility mode, so give only the vendored subdirectory the supported
+# policy floor it needs to configure.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 set(CMAKE_SKIP_INSTALL_RULES TRUE)
 add_subdirectory(vendor/opengv EXCLUDE_FROM_ALL)
 set(CMAKE_SKIP_INSTALL_RULES FALSE)
