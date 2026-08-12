@@ -66,3 +66,15 @@ pytest -q
 ```
 
 The test suite exercises camera projection/unprojection, marker geometry, project persistence, synthetic bundle adjustment, GUI imports, dense reconstruction availability checks, and related helpers. The exact number of passing and skipped tests can vary depending on optional GUI/display availability and optional dependencies such as PyTorch.
+
+## Releasing wheels
+
+In GitHub, open **Actions → Build/Release Wheels → Run workflow**, choose the branch or commit to release, and enter a tag matching the package version, such as `v0.1.0`.
+
+The manual workflow produces separate CPython 3.10, 3.11, and 3.12 wheels for Windows x86-64, Linux x86-64, and Linux AArch64. It attaches the nine wheels directly to the GitHub Release; it does not publish to PyPI.
+
+Download the wheel for the target Python and platform, then install it directly, for example:
+
+```sh
+pip install ./fidumap-0.1.0-cp312-cp312-manylinux_2_28_aarch64.whl
+```

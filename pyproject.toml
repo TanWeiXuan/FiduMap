@@ -1,0 +1,28 @@
+[build-system]
+requires = [
+    "scikit-build-core>=0.10",
+    "pybind11>=2.12",
+    "numpy>=1.26",
+]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "fidumap"
+version = "0.1.0"
+description = "Fiducial map building and OpenGV-based runtime localisation"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.26"]
+
+[tool.scikit-build]
+cmake.version = ">=3.18"
+wheel.packages = ["src/map_builder", "src/camera_calibration", "src/absolute_pose_solver"]
+
+[tool.cibuildwheel]
+build = "cp310-* cp311-* cp312-*"
+skip = "*-musllinux_*"
+test-command = "python {project}/tests/wheel_smoke_test.py"
+
+[tool.cibuildwheel.linux]
+manylinux-x86_64-image = "manylinux_2_28"
+manylinux-aarch64-image = "manylinux_2_28"

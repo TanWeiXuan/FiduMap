@@ -1,0 +1,206 @@
+name: Build/Release Wheels
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag, for example v0.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_TAG: ${{ inputs.release_tag }}
+
+jobs:
+  validate-release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Validate release tag and package version
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import tomllib
+          from pathlib import Path
+
+          tag = os.environ["RELEASE_TAG"]
+          if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag) is None:
+              raise SystemExit("release_tag must look like v0.1.0")
+          package_version = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+          if tag[1:] != package_version:
+              raise SystemExit(
+                  f"release_tag {tag!r} does not match package version {package_version!r}"
+              )
+          PY
+
+  build-windows-x86_64:
+    needs: validate-release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: recursive
+
+      - name: Build and test wheels
+        uses: pypa/cibuildwheel@v4.1.1
+        with:
+          output-dir: wheelhouse
+        env:
+          CIBW_ARCHS_WINDOWS: AMD64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-windows-x86_64
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  build-linux-x86_64:
+    needs: validate-release
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: recursive
+
+      - name: Build and test wheels
+        uses: pypa/cibuildwheel@v4.1.1
+        with:
+          output-dir: wheelhouse
+        env:
+          CIBW_ARCHS_LINUX: x86_64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-x86_64
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  build-linux-aarch64:
+    needs: validate-release
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: recursive
+
+      - name: Build and test wheels
+        uses: pypa/cibuildwheel@v4.1.1
+        with:
+          output-dir: wheelhouse
+        env:
+          CIBW_ARCHS_LINUX: aarch64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-aarch64
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  create-release:
+    needs:
+      - build-windows-x86_64
+      - build-linux-x86_64
+      - build-linux-aarch64
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: artifacts
+
+      - name: Validate and collect release wheels
+        run: |
+          python3 - <<'PY'
+          import collections
+          import os
+          import re
+          import shutil
+          from pathlib import Path
+
+          wheels = sorted(Path("artifacts").glob("**/*.whl"))
+          if len(wheels) != 9:
+              raise SystemExit(f"Expected exactly 9 wheels, found {len(wheels)}")
+
+          names = [wheel.name for wheel in wheels]
+          duplicates = [name for name, count in collections.Counter(names).items() if count > 1]
+          if duplicates:
+              raise SystemExit(f"Duplicate wheel filenames: {duplicates}")
+
+          package_version = os.environ["RELEASE_TAG"][1:]
+          if any(f"-{package_version}-" not in name for name in names):
+              raise SystemExit(
+                  f"Every wheel must contain release version {package_version}: {names}"
+              )
+
+          expected = {
+              (python, platform)
+              for python in ("cp310", "cp311", "cp312")
+              for platform in ("windows-x86_64", "linux-x86_64", "linux-aarch64")
+          }
+          found = []
+          for wheel in wheels:
+              match = re.search(r"-(cp3(?:10|11|12))-\1-(.+)\.whl$", wheel.name)
+              if match is None:
+                  raise SystemExit(f"Unexpected wheel tags: {wheel.name}")
+              python, platform_tag = match.groups()
+              if platform_tag == "win_amd64":
+                  platform = "windows-x86_64"
+              elif platform_tag.startswith("manylinux_") and platform_tag.endswith("_x86_64"):
+                  platform = "linux-x86_64"
+              elif platform_tag.startswith("manylinux_") and platform_tag.endswith("_aarch64"):
+                  platform = "linux-aarch64"
+              else:
+                  raise SystemExit(f"Wheel is not an expected Windows/manylinux target: {wheel.name}")
+              found.append((python, platform))
+
+          counts = collections.Counter(found)
+          if set(counts) != expected or any(count != 1 for count in counts.values()):
+              raise SystemExit(f"Wheel target set is incomplete or duplicated: {counts}")
+
+          wheelhouse = Path("wheelhouse")
+          wheelhouse.mkdir()
+          for wheel in wheels:
+              shutil.copy2(wheel, wheelhouse / wheel.name)
+          PY
+
+      - name: Refuse to overwrite an existing release or unexpected tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::Release $RELEASE_TAG already exists"
+            exit 1
+          fi
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            git fetch --force --no-tags origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+            tag_commit="$(git rev-list -n 1 "$RELEASE_TAG")"
+            if [ "$tag_commit" != "$GITHUB_SHA" ]; then
+              echo "::error::Tag $RELEASE_TAG points to $tag_commit, expected $GITHUB_SHA"
+              exit 1
+            fi
+          fi
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$RELEASE_TAG" wheelhouse/*.whl \
+            --target "$GITHUB_SHA" \
+            --title "$RELEASE_TAG" \
+            --generate-notes
