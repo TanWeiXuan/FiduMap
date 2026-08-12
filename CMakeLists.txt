@@ -44,6 +44,20 @@ if(NOT MSVC)
         list(FILTER _opengv_compile_options EXCLUDE REGEX "^-m(arch|cpu)=")
         set_property(TARGET opengv PROPERTY COMPILE_OPTIONS "${_opengv_compile_options}")
     endif()
+
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64)|(AMD64)|(amd64)")
+        set(_fidumap_arch_option -march=x86-64)
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "(arm64)|(ARM64)|(aarch64)|(AARCH64)")
+        set(_fidumap_arch_option -march=armv8-a)
+    endif()
+    if(_fidumap_arch_option)
+        # OpenGV adds -march=native on x86. Override it with a wheel-safe
+        # baseline and use the same Eigen ABI in OpenGV and the extension.
+        target_compile_options(opengv PRIVATE "${_fidumap_arch_option}")
+    endif()
+    target_compile_definitions(
+        opengv PUBLIC EIGEN_MAX_ALIGN_BYTES=16 EIGEN_MAX_STATIC_ALIGN_BYTES=16
+    )
 endif()
 
 if(MSVC)
@@ -65,6 +79,10 @@ endif()
 pybind11_add_module(_opengv_native NO_EXTRAS src/absolute_pose_solver/native/bindings.cpp)
 target_compile_features(_opengv_native PRIVATE cxx_std_14)
 target_link_libraries(_opengv_native PRIVATE opengv)
+
+if(_fidumap_arch_option)
+    target_compile_options(_opengv_native PRIVATE "${_fidumap_arch_option}")
+endif()
 
 if(MSVC)
     target_compile_options(_opengv_native PRIVATE /bigobj)
