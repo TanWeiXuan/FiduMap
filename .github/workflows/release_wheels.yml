@@ -49,12 +49,20 @@ jobs:
           ref: ${{ github.sha }}
           submodules: recursive
 
+      - name: Verify clang-cl and Ninja
+        run: |
+          clang-cl --version
+          ninja --version
+
       - name: Build and test wheels
         uses: pypa/cibuildwheel@v4.1.1
         with:
           output-dir: wheelhouse
         env:
           CIBW_ARCHS_WINDOWS: AMD64
+          CMAKE_GENERATOR: Ninja
+          CXX: clang-cl
+          CMAKE_BUILD_PARALLEL_LEVEL: 4
 
       - uses: actions/upload-artifact@v4
         with:
