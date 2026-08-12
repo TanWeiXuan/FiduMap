@@ -2,9 +2,8 @@
 
 ## Future plans
 
-- Implement a standalone runtime localisation module that consumes exported marker-corner CSV files.
-- Add a robust PnP-with-RANSAC runtime path for live camera pose estimation.
-- Provide a documented runtime API for loading maps, detecting markers, estimating pose, and returning diagnostics.
+- Add optional temporal filtering and tracking around the implemented absolute pose solver.
+- Add application-specific pose-quality thresholds and uncertainty estimates.
 - Improve dense reconstruction quality, usability, and dependency setup.
 - Add richer GUI progress reporting and error handling for long-running optimisation and dense reconstruction jobs.
 - Expand example datasets and include end-to-end tutorial walkthroughs.
@@ -13,11 +12,11 @@
 
 | Area | Status |
 |---|---|
-| Runtime localisation | Planned, not yet a standalone fully implemented module. |
+| Runtime localisation | Absolute pose solving is implemented; temporal tracking, uncertainty estimates, and live-application integration remain future work. |
 | Dense reconstruction | Experimental and incomplete; optional dependencies are required. |
 | Dense GUI integration | Partially integrated; further workflow polish and validation needed. |
 | Optional dependency management | Dense reconstruction dependencies are intentionally not installed by the default requirements file. |
-| Documentation | Initial documentation now exists, but API-level reference docs and tutorials can be expanded. |
+| Documentation | Core Map Builder and absolute-pose guides exist; more end-to-end tutorials can still be added. |
 
 ## Critical bug watchlist
 

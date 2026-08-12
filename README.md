@@ -1,6 +1,6 @@
 # FiduMap
 
-FiduMap is a fiducial-marker based localisation project. The repository currently focuses on the **Map Builder**, which builds an optimised 3D map of ArUco/AprilTag markers from calibrated images. The exported map is intended to support a future runtime localisation system that estimates camera pose from known markers.
+FiduMap is a fiducial-marker based localisation project. The **Map Builder** builds an optimised 3D map of ArUco/AprilTag markers from calibrated images, and the OpenGV-backed **absolute pose solver** estimates a camera or rigid camera body's pose from known markers in that map.
 
 ## Documentation
 
@@ -14,7 +14,7 @@ Detailed documentation now lives in the [`docs`](docs/index.md) folder.
 | [Dense reconstruction](docs/dense-reconstruction.md) | Experimental semi-dense matching and point-cloud reconstruction notes. |
 | [Metric depth maps](docs/metric-depth.md) | Optional offline metric-depth generation, verification, viewing, and export. |
 | [Repository components](docs/repository-components.md) | Tests, example data, vendored assets, helper scripts, and support folders. |
-| [Runtime localisation direction](docs/runtime-localisation.md) | Planned runtime localisation workflow that consumes exported marker maps. |
+| [Absolute pose solver](docs/runtime-localisation.md) | Quick start, single- and multi-camera usage, frames, tuning, diagnostics, and troubleshooting. |
 | [Future plans and notes](docs/future-plans.md) | Incomplete features, critical bug watchlist, and contribution notes. |
 
 ## Quick start
@@ -47,6 +47,15 @@ Run tests:
 ```sh
 pytest -q
 ```
+
+Build and install the absolute pose solver from a source checkout:
+
+```sh
+git submodule update --init --recursive
+python -m pip install .
+```
+
+See the [absolute pose solver quick start](docs/runtime-localisation.md#quick-start) for map export, camera setup, marker detection, and pose estimation.
 
 ## Current workflow summary
 

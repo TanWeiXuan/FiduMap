@@ -2,7 +2,7 @@
 
 ## Tests
 
-The `tests` directory covers the current map builder implementation. Coverage includes:
+The `tests` directory covers the Map Builder and absolute pose solver. Coverage includes:
 
 - camera projection and unprojection;
 - camera XML read/write;
@@ -19,7 +19,10 @@ The `tests` directory covers the current map builder implementation. Coverage in
 - CSV export;
 - GUI imports and map viewer logic;
 - dense reconstruction availability, metadata, matching, pair selection, triangulation, export, and duplicate merging checks;
-- metric-depth prompt geometry, alignment, verification, sidecar storage/export, pipeline, deterministic rendering, and optional-dependency imports.
+- metric-depth prompt geometry, alignment, verification, sidecar storage/export, pipeline, deterministic rendering, and optional-dependency imports;
+- marker-map CSV loading and corner-order conversion;
+- synthetic single- and multi-camera absolute pose recovery;
+- RANSAC outlier rejection and installed-wheel pose-solver smoke testing.
 
 Run the suite with:
 
@@ -40,6 +43,8 @@ pytest -q
 | Folder | Purpose |
 |---|---|
 | `vendor/azure_ttk_theme` | Tkinter theme files used by the GUI. |
+| `vendor/eigen` | Eigen submodule used to build the native absolute pose solver. |
+| `vendor/opengv` | OpenGV submodule providing robust absolute-pose algorithms. |
 | `vendor/xfeat` | Vendored semi-dense feature extraction/matching code and model weights used by dense reconstruction. |
 
 Metric-depth model weights and VTK are not vendored. They are optional user-installed dependencies described in [Metric depth maps](metric-depth.md).

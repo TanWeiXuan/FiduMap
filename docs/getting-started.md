@@ -57,6 +57,21 @@ python src/map_builder/gui/app.py
 
 The GUI supports selecting an image folder, indexing images, running marker detection, initialising poses, running bundle adjustment, inspecting results, visualising the marker map, and exporting the final CSV.
 
+## Running the absolute pose solver
+
+Initialise the native dependencies and install the repository package:
+
+```sh
+git submodule update --init --recursive
+python -m pip install .
+```
+
+The solver consumes the marker-corner CSV produced by **Export Optimized CSV**
+and a calibrated camera XML. See the [absolute pose solver quick
+start](runtime-localisation.md#quick-start) for a complete detection and solve
+example, coordinate-frame conventions, result diagnostics, multi-camera setup,
+and troubleshooting.
+
 ## Running tests
 
 From the repository root:
